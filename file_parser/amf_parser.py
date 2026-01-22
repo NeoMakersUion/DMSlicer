@@ -1,22 +1,33 @@
 from pathlib import Path
-import xml.etree.ElementTree as ET
-import numpy as np
-import pyvista as pv
-from tqdm import tqdm
-from pathlib import Path
-from typing import List, Dict, Union, Tuple, Optional
+from typing import List, Dict, Union, Tuple, Optional, Any
 import xml.etree.ElementTree as ET
 import numpy as np
 import pyvista as pv
 from tqdm import tqdm
 
+try:
+    from .config import DEFAULTS
+except ImportError:
+    # Default configuration values
+    DEFAULTS: Dict[str, Any] = {
+        "AMF_TARGET_REDUCTION": 0.0,
+        "AMF_DECIMATE_MIN_TRIS": 100,
+    }
+AMF_TARGET_REDUCTION = DEFAULTS["AMF_TARGET_REDUCTION"]
+AMF_DECIMATE_MIN_TRIS = DEFAULTS["AMF_DECIMATE_MIN_TRIS"]
+
+from visualizer.visualizer_interface import IVisualizer
+from visualizer.pyvista_visualizer import PyVistaVisualizer
+from .mesh_data import MeshData
+
 def read_amf_objects(
     uploaded_file: Union[str, Path],
-    target_reduction: float = 0.0,
+    target_reduction: float = AMF_TARGET_REDUCTION,
     show: bool = False,
-    decimate_min_tris: int = 100,
+    decimate_min_tris: int = AMF_DECIMATE_MIN_TRIS,
     progress: bool = True,
-) -> List[Dict[str, Union[np.ndarray, Tuple[float, float, float]]]]:
+    visualizer: Optional[IVisualizer] = None,
+) -> List[MeshData]:
     """
     解析 AMF 文件（Additive Manufacturing File），按 object 输出网格数据。
 
@@ -26,23 +37,10 @@ def read_amf_objects(
         show: 是否用 PyVista 实时预览每个 object（半透明+边框）
         decimate_min_tris: 仅当三角数 ≥ 该阈值时才对该 object 执行网格简化
         progress: 是否显示 tqdm 进度条
+        visualizer: 可选的可视化器实例。如果为 None 且 show=True，默认使用 PyVistaVisualizer。
 
     Returns:
-        List[dict]，每个元素为：
-        {
-          'vertices': (Ni,3) float32，
-          'triangles': (Mi,3) int64，
-          'color': (3,) float64 in [0,1]
-        }
-
-    过程说明：
-        1) 读取 XML，去除命名空间前缀，得到根节点。
-        2) 遍历每个 <object>：
-           - 收集 <vertex>/<triangle> 构建几何；
-           - 若满足简化条件，调用 PyVista decimate；
-           - 读取颜色（若有），默认中性灰；
-           - 可选绘制（半透明/带边）的快速预览。
-        3) 返回对象级别的多网格列表。后续由 Part.merge 统一合并。
+        List[MeshData]: 包含解析后的网格数据对象的列表。
     """
     try:
         with open(uploaded_file, 'r', encoding='utf-8') as f:
@@ -62,13 +60,13 @@ def read_amf_objects(
 
     object_xml = root.findall(".//object")
     result = []
-    plotter = None
-    if show:
+    
+    # Initialize visualizer if showing is requested
+    if show and visualizer is None:
         try:
-            plotter = pv.Plotter()
+            visualizer = PyVistaVisualizer()
         except Exception as e:
-            # 某些环境（无显示/驱动）初始化失败，降级为不显示
-            print(f"Warning: Failed to initialize plotter. Details: {e}")
+            print(f"Warning: Failed to initialize visualizer. Details: {e}")
             show = False
 
     # 顶层进度：对象个数
@@ -103,6 +101,8 @@ def read_amf_objects(
             triangles = np.array(triangles, dtype=np.int64)
 
             # 构造临时 PolyData 做简化/一致化处理
+            # 注意：这里仍然使用 pyvista 做网格处理，因为这是 core logic 的一部分 (mesh simplification)
+            # 如果要完全解耦 pyvista，需要引入其他几何处理库(如 trimesh)，或者只在需要 simplify 时才 import pyvista
             faces = np.hstack([np.full((len(triangles), 1), 3, dtype=np.int64), triangles]).ravel()
             mesh = pv.PolyData(vertices, faces)
 
@@ -123,28 +123,25 @@ def read_amf_objects(
                 g = float(color_elem.find("g").text.strip())
                 b = float(color_elem.find("b").text.strip())
 
-            result.append({
-                'vertices': np.asarray(vertices),
-                'triangles': np.asarray(triangles, dtype=np.int64),
-                'color': np.array([r, g, b], dtype=float)
-            })
+            result.append(MeshData(
+                vertices=np.asarray(vertices),
+                triangles=np.asarray(triangles, dtype=np.int64),
+                color=np.array([r, g, b], dtype=float)
+            ))
 
             # 可视化（如开启）
-            if show:
-                plotter = plotter or pv.Plotter()
-                faces_vis = np.hstack([np.full((triangles.shape[0], 1), 3, dtype=np.int64), triangles]).ravel()
-                plotter.add_mesh(pv.PolyData(vertices, faces_vis),
-                                 color=[r, g, b], show_edges=True, opacity=0.5)
+            if show and visualizer:
+                visualizer.add_mesh(
+                    mesh=result[-1],
+                    opacity=0.5
+                )
         except Exception as e:
             # 对单个 object 的错误容忍，继续下一个 object
             print(f"Error: processing object {index}. Details: {e}")
             continue
 
-    if show and plotter is not None:
-        try:
-            plotter.show()
-        except Exception as e:
-            print(f"Warning: Failed to display 3D model. Details: {e}")
+    if show and visualizer:
+        visualizer.show()
 
     return result
 
