@@ -1,0 +1,12 @@
+[project]
+name = "dmslicer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.2.6",
+    "pathlib>=1.0.1",
+    "pyvista>=0.46.5",
+    "tqdm>=4.67.1",
+]
