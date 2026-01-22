@@ -4,18 +4,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pyvista as pv
 from tqdm import tqdm
-
-try:
-    from .config import DEFAULTS
-except ImportError:
-    # Default configuration values
-    DEFAULTS: Dict[str, Any] = {
-        "AMF_TARGET_REDUCTION": 0.0,
-        "AMF_DECIMATE_MIN_TRIS": 100,
-    }
-AMF_TARGET_REDUCTION = DEFAULTS["AMF_TARGET_REDUCTION"]
-AMF_DECIMATE_MIN_TRIS = DEFAULTS["AMF_DECIMATE_MIN_TRIS"]
-
+from .config import AMF_TARGET_REDUCTION, AMF_DECIMATE_MIN_TRIS
 from visualizer.visualizer_interface import IVisualizer
 from visualizer.pyvista_visualizer import PyVistaVisualizer
 from .mesh_data import MeshData
