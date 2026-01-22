@@ -1,6 +1,6 @@
 
 # 🧩 02 — DIFFERENCE
-![02_difference.png](02_difference.png)
+![02_difference.png](./pic/02_difference.png)
 # 🧩 02 — DIFFERENCE
 
 > 从实体区域中扣除被占用区域

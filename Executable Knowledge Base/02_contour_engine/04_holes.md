@@ -1,4 +1,4 @@
-![alt text](04_holes.png)
+![alt text](./pic/04_holes.png)
 
 # 🧩 04 — Holes & Nesting（pyclipper 用法视角）
 

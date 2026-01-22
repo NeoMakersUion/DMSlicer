@@ -1,7 +1,7 @@
 # 布尔运算：UNION
 
 > **把两个重叠的矩形，变成一个“可打印的外轮廓”。**
-![01_basic_boolean.png](01_basic_boolean.png)
+![01_basic_boolean.png](./pic/01_basic_boolean.png)
 
 也就是 slicer 的：
 

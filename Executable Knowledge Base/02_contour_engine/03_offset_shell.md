@@ -2,7 +2,7 @@
 
 
 # 🧩 03 — OFFSET (Shell / Wall / Nozzle Compensation)
-![alt text](03_offset_shell.png)
+![alt text](./pic/03_offset_shell.png)
 在切片软件中，`OFFSET` 表示：
 > **把实体轮廓向内或向外平移一定距离，生成打印路径**
 
