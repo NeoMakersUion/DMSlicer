@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.2.6",
     "pathlib>=1.0.1",
+    "pyclipper>=1.4.0",
     "pyvista>=0.46.5",
     "tqdm>=4.67.1",
 ]
