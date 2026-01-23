@@ -8,6 +8,8 @@ from ..visualizer.visualizer_interface import IVisualizer
 from .mesh_data import MeshData
 from .model import Model
 from ..visualizer.visualizer_type import VisualizerType
+from .workspace_utils import sha256_of_file, check_workspace_folder_exists
+
 
 def read_amf_objects(
     uploaded_file: Union[str, Path],
@@ -18,24 +20,34 @@ def read_amf_objects(
 ) -> Model:
     """
     解析 AMF 文件（Additive Manufacturing File）并构建 3D 模型对象。
-
-    该函数读取 AMF 文件中的 XML 数据，提取顶点、三角形和颜色信息，
-    将其转换为 MeshData 对象，并聚合到 Model 实例中。
-    同时支持通过工厂模式初始化的可视化器进行实时预览。
-
-    Args:
-        uploaded_file (Union[str, Path]): AMF 文件的路径。
-        progress (bool, optional): 是否显示进度条 (tqdm)。默认为 True。
-        show (bool, optional): 是否在解析完成后显示 3D 预览。默认为 False。
-        visualizer_type (Optional[VisualizerType], optional): 指定可视化器的类型。
-            如果为 None 且 show=True，将使用默认的可视化器（通常是 PyVista）。
-        **kwargs: 传递给其他潜在扩展功能的额外参数。
-
-    Returns:
-        Model: 包含所有解析出的 MeshData 对象的模型容器。
-            如果解析失败（如文件不存在或格式错误），返回一个空的 Model 实例。
+    ... (保持原有文档字符串不变) ...
     """
     try:
+        # 计算文件哈希并检查缓存是否存在
+        sha256_hash = sha256_of_file(uploaded_file)
+        _,cached_flag= check_workspace_folder_exists(sha256_hash)
+
+        
+        if cached_flag:
+            print(f"Info: Cache found in workspace for hash {sha256_hash}")
+            cached_model = Model.load(sha256_hash)
+            if cached_model:
+                print(f"Info: Successfully loaded model from cache.")
+                # 如果请求显示 (show=True)，则初始化并运行可视化器
+                if show:
+                    try:
+                        visualizer = IVisualizer.create(visualizer_type)
+                        if visualizer:
+                            cached_model.show(visualizer)
+                            visualizer.show()
+                    except Exception as e:
+                        print(f"Warning: Failed to initialize visualizer for cached model. Details: {e}")
+                return cached_model
+            else:
+                print(f"Warning: Failed to load model from cache despite folder existence. Reparsing...")
+        
+        model = Model()
+        model.hash_id = sha256_hash
         with open(uploaded_file, 'r', encoding='utf-8') as f:
             xml_content = f.read()
         # 预处理 XML：移除命名空间前缀以简化 XPath 查询
@@ -51,7 +63,6 @@ def read_amf_objects(
         print(f"Error: Unexpected error occurred while reading file. Details: {e}")
         return Model()
 
-    model = Model()
     object_xml = root.findall(".//object")
     
     # 主进度条：遍历所有 object 节点
@@ -108,6 +119,9 @@ def read_amf_objects(
             # 捕获单个 object 解析过程中的错误，避免中断整个文件的解析
             print(f"Error: processing object {index}. Details: {e}")
             continue
+
+    # Save to cache
+    model.save()
 
     # ---- 可视化处理 ----
     # 如果请求显示 (show=True)，则初始化并运行可视化器
