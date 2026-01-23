@@ -22,10 +22,13 @@ from .amf_parser import read_amf_objects
 from .mesh_data import MeshData
 from .model import Model
 from .parser import file_parser
+from .workspace_utils import sha256_of_file, check_workspace_folder_exists
 
 __all__ = [
     "read_amf_objects",
     "MeshData",
     "Model",
-    "file_parser"
+    "file_parser",
+    "sha256_of_file",
+    "check_workspace_folder_exists"
 ]
