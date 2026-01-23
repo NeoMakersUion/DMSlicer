@@ -1,4 +1,25 @@
 # DMSlicer
+```bash
+AMF
+  ↓
+file_parser → Model
+  ↓
+geometry_kernel
+  → unified vertices
+  → face adjacency
+  → object adjacency
+  → contact surfaces
+  ↓
+build_prep
+  → assign materials
+  → detect boundaries
+  → infer gradient zones
+  → mark support / glue / embed
+  ↓
+slicer
+
+
+```
 
 ```bash
 DMSLICER/
