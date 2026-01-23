@@ -16,7 +16,6 @@ class Model:
     """
     meshes: List[MeshData] = field(default_factory=list)
     hash_id: str = field(default_factory=str)
-    hint_type:bool=False
     
     # 移除 explicit count 字段，避免状态不同步
     # count: int = field(default_factory=lambda: 0)
@@ -128,8 +127,8 @@ class Model:
             if model.hash_id != hash_id:
                 print(f"Warning: Loaded model hash_id ({model.hash_id}) does not match requested ({hash_id})")
                 model.hash_id = hash_id # Auto-correct?
-            if self.hint_type:
-                print(f"Info: Model loaded Successfully!")
+
+            print(f"Info: Model loaded Successfully!")
             return model
         except Exception as e:
             print(f"Error: Failed to load model: {e}")
