@@ -82,3 +82,5 @@ htmlcov/
 
 # obsidian 笔记文件
 .obsidian/
+test.txt
+tmp.bat
