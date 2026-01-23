@@ -15,6 +15,6 @@ class InterFaceResult:
     tri_intervals: Optional[Dict[int, List[Tuple[float, float]]]] = None
 
 class Part:
-    def __init__(self):
+    def __init__(self):  
         self.vertices: List = []
         self.triangles: List = []
