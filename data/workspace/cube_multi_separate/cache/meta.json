@@ -1,0 +1,10 @@
+{
+  "file_hash": "fede920682509db8581a5e65d5b2a2ccfa051fb6bb0a75a99fda88e380bee4af",
+  "algo_params": {
+    "eps": 0.1,
+    "keep_all": true,
+    "axis": "Z"
+  },
+  "cache_version": "v1",
+  "created_at": "2025-10-11T16:17:08"
+}
