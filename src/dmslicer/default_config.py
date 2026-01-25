@@ -5,5 +5,11 @@ DEFAULTS: Dict[str, Any] = {
     # AMF Parser Defaults
     "AMF_TARGET_REDUCTION": 0.0,      # 网格简化比例 (0~1)
     "AMF_DECIMATE_MIN_TRIS": 100,     # 仅当三角数 >= 该阈值时才执行简化
-    "DEFAULT_VISUALIZER": VisualizerType.PyVistaVisualizer,  # 默认可视化器
+    "DEFAULT_VISUALIZER": VisualizerType.PyVista,  # 默认可视化器
+
+    # Geometry Kernel Defaults
+    "GEOM_ACC": 2,                   # 几何精度 (保留小数位数)
+
+    # ACCULATE Defaults
+    "ACCULATE_ACC":8 #计算时候的精度
 }

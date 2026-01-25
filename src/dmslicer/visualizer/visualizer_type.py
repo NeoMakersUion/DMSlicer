@@ -3,5 +3,5 @@ class VisualizerType(IntEnum):
     """
     Enum class for different types of visualizers.
     """
-    PyVistaVisualizer = 0
+    PyVista = 0
     Vtk=1

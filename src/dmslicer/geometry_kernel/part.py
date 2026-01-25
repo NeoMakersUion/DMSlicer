@@ -1,6 +1,9 @@
-from typing import List
-from dataclass import dataclass
-from file_parser import read_amf_objects
+from typing import List, Dict, Tuple, Set, Optional, TYPE_CHECKING
+import numpy as np
+from dataclasses import dataclass
+
+if TYPE_CHECKING:
+    from ..file_parser import read_amf_objects
 
 @dataclass
 class InterFaceResult:

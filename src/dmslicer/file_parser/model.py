@@ -1,10 +1,11 @@
 import pickle
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional, Union, ClassVar
+from typing import List, Optional, Union, ClassVar, TYPE_CHECKING
 from .mesh_data import MeshData
 from .workspace_utils import get_workspace_dir
-from ..visualizer.visualizer_interface import IVisualizer
+if TYPE_CHECKING:
+    from ..visualizer.visualizer_interface import IVisualizer
 
 @dataclass
 class Model:
@@ -134,10 +135,10 @@ class Model:
             print(f"Error: Failed to load model: {e}")
             return None
 
-    def show(self, visualizer: IVisualizer):
+    def show(self, visualizer: "IVisualizer"):
         """Show the model using the provided visualizer."""
         for mesh in self.meshes:
-            visualizer.add_mesh(
-                mesh=mesh,
+            visualizer.add(
+                obj=mesh,
                 opacity=0.5
             )

@@ -19,14 +19,14 @@ import numpy as np
 
 from ..file_parser.model import Model
 
-from .mesh_normalize import normalize_meshes
+from .mesh_normalize import Geom
 from .topology3d import Topology3D
 from .spatial_index import SpatialIndex
 from .intersection import (
     intersect_triangle_with_plane,
 )
 
-
+from .config import GEOM_ACC
 class GeometryKernel:
     """
     GeometryKernel represents a complete, queryable 3D mesh world.
@@ -43,25 +43,23 @@ class GeometryKernel:
     # Construction
     # -------------------------
 
-    def __init__(self, model: Model):
+    def __init__(self, model: Model,acc:int=GEOM_ACC):
         """
         Build the 3D geometry kernel from a parsed Model.
 
         Args:
             model: Model produced by file_parser (list of MeshData)
         """
+        self.acc=acc
         # Step 1: normalize all meshes into one global mesh
-        (
-            self.vertices,          # (N,3) float
-            self.triangles,         # (M,3) int (indices into vertices)
-            self.triangle_meta      # triangle_id → {object_id, block_id, color}
-        ) = normalize_meshes(model)
+        self.geom = Geom(model,acc)
 
-        # Step 2: build topology (adjacency)
-        self.topology = Topology3D(self.triangles)
+        self.geom.show()  
+        # # Step 2: build topology (adjacency)
+        # self.topology = Topology3D(self.triangles)
 
-        # Step 3: build spatial index (z-range, fast plane queries)
-        self.spatial = SpatialIndex(self.vertices, self.triangles)
+        # # Step 3: build spatial index (z-range, fast plane queries)
+        # self.spatial = SpatialIndex(self.vertices, self.triangles)
 
     # ============================================================
     #                  High-level slicing API

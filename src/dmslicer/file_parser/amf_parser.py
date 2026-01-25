@@ -1,10 +1,13 @@
 from pathlib import Path
-from typing import List, Dict, Union, Tuple, Optional, Any
+from typing import List, Dict, Union, Tuple, Optional, Any, TYPE_CHECKING
 import xml.etree.ElementTree as ET
 import numpy as np
 import pyvista as pv
 from tqdm import tqdm
-from ..visualizer.visualizer_interface import IVisualizer
+
+if TYPE_CHECKING:
+    from ..visualizer.visualizer_interface import IVisualizer
+    
 from .mesh_data import MeshData
 from .model import Model
 from ..visualizer.visualizer_type import VisualizerType
@@ -22,6 +25,11 @@ def read_amf_objects(
     解析 AMF 文件（Additive Manufacturing File）并构建 3D 模型对象。
     ... (保持原有文档字符串不变) ...
     """
+    try:
+        from ..visualizer import IVisualizer
+    except ImportError:
+        pass
+
     try:
         # 计算文件哈希并检查缓存是否存在
         sha256_hash = sha256_of_file(uploaded_file)
@@ -124,7 +132,6 @@ def read_amf_objects(
     model.save()
 
     # ---- 可视化处理 ----
-    # 如果请求显示 (show=True)，则初始化并运行可视化器
     if show:
         try:
             # 使用工厂方法根据指定的类型创建可视化器实例
