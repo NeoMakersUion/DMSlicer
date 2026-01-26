@@ -113,7 +113,7 @@ class GeometryKernel:
     # ============================================================
 
     def get_all_triangles(self):
-        return self.trianglessssss;
+        return self.triangles
 
     def get_all_vertices(self):
         return self.vertices

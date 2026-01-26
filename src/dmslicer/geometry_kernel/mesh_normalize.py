@@ -39,7 +39,7 @@ class IdOrder(Enum):
 class Object:
     acc:int=GEOM_ACC
     id:Optional[int]=None
-    triangle_ids: Optional[np.ndarray] = None       
+    triangles_ids: Optional[np.ndarray] = None       
     color: Optional[np.ndarray] = None
     triangle_ids_order:Optional[IdOrder]=None
     status:Optional[Status]=None
@@ -52,7 +52,7 @@ class Object:
         return self.__hash_id
 
     def visualize(self,vertices,triangles):
-        visualize_vertices_and_triangles(self.vertices[self.triangle_ids],self.triangles[self.triangle_ids])
+        visualize_vertices_and_triangles(self.vertices[self.triangles_ids],self.triangles[self.triangles_ids])
 
     def update(self, **kwargs):
         for k, v in kwargs.items():
@@ -64,7 +64,7 @@ class Object:
         self.__hash_id = hash((
             self.acc,
             self.id,
-            self.triangle_ids.tobytes() if self.triangle_ids is not None else None,
+            self.triangles_ids.tobytes() if self.triangles_ids is not None else None,
             self.color.tobytes() if self.color is not None else None,
             self.triangle_ids_order,
             self.status
@@ -201,7 +201,7 @@ class Geom:
             obj = Object()
             # 初始化对象属性，记录其在全局数据中的三角形索引列表
             obj.update(
-                triangle_ids=np.array(obj_triangle_indices, dtype=np.int64),
+                triangles_ids=np.array(obj_triangle_indices, dtype=np.int64),
                 id=mesh.id,
                 color=deepcopy(mesh.color),
                 acc=self.acc,
@@ -322,7 +322,7 @@ def normalize_meshes(model, acc: int):
             all_triangles.append(gtri)
             global_t_count+=1
         end=global_t_count
-        obj.triangle_ids=np.arange(start,end,dtype=np.int64)
+        obj.triangles_ids=np.arange(start,end,dtype=np.int64)
         obj.color=(color)
         self.objects.append(obj)
 

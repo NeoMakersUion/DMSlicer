@@ -29,7 +29,24 @@ class PyVistaVisualizer(IVisualizer):
         except Exception as e:
             # Fallback or re-raise depending on policy. Here we re-raise to let caller handle it.
             raise RuntimeError(f"Failed to initialize PyVista Plotter: {e}")
+    def addObject(self,geom:Geom,object:Object,triangles_ids=None,opacity:float=0.5,color=None):
+        """
+        Add object to PyVista plotter.
+        """
+        vertices=geom.vertices.astype(np.float32)  # Convert int64 to float32 for PyVista
+        if color is None:
+            color=object.color
+        if triangles_ids is None:
+            triangles_ids=object.triangles_ids
+        
+        if triangles_ids is None:
+             import logging
+             logging.warning(f"Object {object.id if object else 'Unknown'} has no triangles_ids. Skipping visualization.")
+             return
 
+        triangles=geom.triangles[triangles_ids]
+        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity)
+    
     def add(
         self,
         obj: Union[MeshData,Geom, pv.PolyData],
@@ -65,10 +82,9 @@ class PyVistaVisualizer(IVisualizer):
                     continue
                 else:
                     index=object_list.index(object.id)
-                color=object.color
-                triangles_ids=object.triangle_ids
-                triangles=geom.triangles[triangles_ids]
-                self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity_list[index])
+                opacity=opacity_list[index]
+                self.addObject(geom,object,opacity=opacity)
+
                 
 
         elif isinstance(obj, pv.PolyData):
