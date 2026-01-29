@@ -19,7 +19,7 @@ import numpy as np
 
 from ..file_parser.model import Model
 
-from .mesh_normalize import Geom
+from .canonicalize import Geom
 from .topology3d import Topology3D
 from .spatial_index import SpatialIndex
 from .intersection import (
@@ -27,6 +27,7 @@ from .intersection import (
 )
 
 from .config import GEOM_ACC
+
 class GeometryKernel:
     """
     GeometryKernel represents a complete, queryable 3D mesh world.
@@ -53,8 +54,8 @@ class GeometryKernel:
         self.acc=acc
         # Step 1: normalize all meshes into one global mesh
         self.geom = Geom(model,acc)
-
-        self.geom.show()  
+        
+        self.geom.show() 
         # # Step 2: build topology (adjacency)
         # self.topology = Topology3D(self.triangles)
 
@@ -64,7 +65,7 @@ class GeometryKernel:
     # ============================================================
     #                  High-level slicing API
     # ============================================================
-
+    
     def query_triangles_by_plane(self, z: float) -> List[int]:
         """
         Return candidate triangle IDs that may intersect with plane Z = z.

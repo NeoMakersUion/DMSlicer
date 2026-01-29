@@ -1,7 +1,5 @@
 
 
-这是一个**工业级几何内核结构**，对你这个项目 100% 适配：
-
 ```
 src/dmslicer/geometry_kernel/
 │
@@ -31,47 +29,15 @@ src/dmslicer/geometry_kernel/
     # index remap
     # triangle canonicalization
 ```
+## `canonicalize.py` 规范化
 
-这不是随便分的，这是**几何内核行业标准分层**。
-
----
-
-# 四、你现在那个 `Part` 该去哪？
-
-原来 `Part` 这个名字不应该消失，而是应该被**降级**为：
-
+```mermaid
+classDiagram
+class Geom{
++__init__()
++__merge_all_meshes()
+}
 ```
-slicer/
-    layer_part.py     # 一个切片层里的一个区域
-    island.py
-    hole.py
-```
+### `__init__`初始化
+### 
 
-也就是：
-
-> 2D 世界里的 Part
-
-而不是 3D 内核。
-
----
-
-# 五、为什么你会感觉“这个文件太长”？
-
-因为你其实写了：
-
-> 一个完整的 3D 几何内核
-> 但用一个 Part.py 把它包住了
-
-这不是你设计不好
-而是你设计得**太好了**，却没有给它对等的架构。
-
----
-
-# 六、下一步我们可以干什么？
-
-如果你愿意，我可以下一步帮你：
-
-👉 把你 `Part.py` 的函数**逐一对位**到上面这些模块里
-👉 给你一份**函数 → 新模块 的迁移表**
-
-你这个几何内核，非常值得“被正式命名”。

@@ -4,7 +4,7 @@ from typing import Dict, Tuple, List,Union,Optional,TYPE_CHECKING
 from collections import defaultdict
 from tqdm import tqdm
 from dataclasses import dataclass
-
+import sys
 if TYPE_CHECKING:
     from ..file_parser import Model
     from ..visualizer import IVisualizer
@@ -12,9 +12,12 @@ if TYPE_CHECKING:
 from ..visualizer import VisualizerType
 from .config import GEOM_ACC,DEFAULT_VISUALIZER_TYPE
 from enum import Enum
+from .bvh import BVHNode,query_obj_bvh, AABB, build_bvh
 class Status(Enum):
     NORMAL=0
-    UPDATING=1
+    SORTING=1
+    SORTED=2
+    UPDATING=3
 class VerticesOrder(Enum):
     XYZ = 0
     XZY = 1
@@ -39,11 +42,15 @@ class IdOrder(Enum):
 class Object:
     acc:int=GEOM_ACC
     id:Optional[int]=None
-    triangles_ids: Optional[np.ndarray] = None       
-    color: Optional[np.ndarray] = None
+    vertices: Optional[np.ndarray] = None
+    triangles: Optional[np.ndarray] = None
+    tri_id2geom_tri_id: Optional[np.ndarray] = None       
     triangle_ids_order:Optional[IdOrder]=None
+    color: Optional[np.ndarray] = None
     status:Optional[Status]=None
     __hash_id:Optional[str]=None
+    aabb: Optional[AABB] = None
+    bvh: Optional[BVHNode] = None
 
     @property
     def hash_id(self) -> str:
@@ -52,7 +59,7 @@ class Object:
         return self.__hash_id
 
     def visualize(self,vertices,triangles):
-        visualize_vertices_and_triangles(self.vertices[self.triangles_ids],self.triangles[self.triangles_ids])
+        visualize_vertices_and_triangles(self.vertices[self.tri_id2geom_tri_id],self.triangles[self.tri_id2geom_tri_id])
 
     def update(self, **kwargs):
         for k, v in kwargs.items():
@@ -64,31 +71,50 @@ class Object:
         self.__hash_id = hash((
             self.acc,
             self.id,
-            self.triangles_ids.tobytes() if self.triangles_ids is not None else None,
+            self.tri_id2geom_tri_id.tobytes() if self.tri_id2geom_tri_id is not None else None,
             self.color.tobytes() if self.color is not None else None,
             self.triangle_ids_order,
             self.status
         ))
+    def ensure_bvh(self):
+        """
+        Ensure the BVH is built and object is sorted.
+        If already sorted and BVH exists, this method returns immediately.
+        
+        Args:
+            geom_triangles_AABB: Global triangle AABBs from Geom. 
+                               If None, BVH cannot be built.
+        """
+        triangles=self.triangles
+        self.bvh = build_bvh(triangles)
+        pass
+    
+        
 
 
 class Geom:
-    def __init__(self,model:"Model",acc=GEOM_ACC) -> None:
+    def __init__(self,model:"Model",acc=GEOM_ACC,vertices_order=VerticesOrder.ZYX,triangles_order=TrianglesOrder.P132) -> None:
         self.acc=acc
         self.model=model
         self.objects = []
-
         self.acc: int = acc
         self.vertices: Union[np.ndarray,List] = []
         self.triangles: Union[np.ndarray,List] = []
         self.objects: List[Object] = []
-        self.vertices_order:Optional[VerticesOrder]=None
-        self.triangles_order:Optional[TrianglesOrder]=None
+        self.obj_by_id: Dict[int, Object] = {} # Map obj.id to Object instance
+        self.vertices_order:VerticesOrder=vertices_order
+        self.triangles_order:TrianglesOrder=triangles_order
         self.model:Optional["Model"]=model
         self.cache={}
         self.__hash_id:Optional[str]=None
         self.status:Optional[Status]=None
         self.triangle_index_map: Dict[Tuple[int, ...], int] = {}
+        self.triangles_AABB: Optional[np.ndarray] = None
+        self.AABB: Optional[np.ndarray] = None
         self.__merge_all_meshes()
+        self.__sort__()
+        self.__build_object_contact_graph()
+        # self.__detect_interface_pairs()
 
     @property
     def hash_id(self) -> str:
@@ -100,108 +126,86 @@ class Geom:
     def __hash__(self) -> None:
         self.__hash_id = hash((
             self.acc,
-            self.vertices.tobytes() if isinstance(self.vertices, np.ndarray) else tuple(self.vertices),
-            self.triangles.tobytes() if isinstance(self.triangles, np.ndarray) else tuple(self.triangles),
-            tuple(hash(o) for o in self.objects),
+            self.model.hash_id,
             self.vertices_order,
             self.triangles_order,
-            self.status
         ))
 
 
     def __merge_all_meshes(self):
         """
-        合并模型中的所有网格对象为一个全局几何体，并执行顶点去重与统一化。
-
-        功能逻辑：
-        1. 遍历模型中的所有网格（Mesh）。
-        2. 对每个网格的顶点进行整型量化（基于 self.acc），以消除浮点误差并支持精确匹配。
-        3. 使用全局顶点映射表（vertex_map）合并重复顶点：
-           - 如果顶点坐标已存在，复用现有全局索引。
-           - 如果是新顶点，分配新的全局索引并存入全局顶点列表。
-        4. 重映射与三角形去重：
-           - 将本地三角形顶点索引转换为全局索引。
-           - 使用 `self.triangle_index_map` (key=tuple(sorted(gtri))) 对三角形进行去重（忽略顶点顺序/法向）。
-           - 如果三角形已存在，复用全局索引；否则创建新条目。
-        5. 生成对象（Object）记录：为每个原始网格创建一个对应的 Object 实例，记录其在全局列表中的三角形索引列表（非连续范围）及属性。
-
-        关键步骤：
-        - 顶点量化：`round(v, acc) * 10^acc` -> int64
-        - 顶点去重：通过 `vertex_map` (Dict[Tuple, int]) 实现跨网格的顶点共享。
-        - 三角形去重：通过 `triangle_index_map` 实现基于顶点集合（frozenset语义）的唯一化。
-        - 索引重映射：`local_index` -> `global_index`。
-
-        副作用：
-        - 更新 `self.vertices`: (N, 3) int64 全局唯一顶点数组。
-        - 更新 `self.triangles`: (M, 3) int64 全局唯一三角形数组。
-        - 更新 `self.triangle_index_map`: 记录三角形顶点集合到全局索引的映射。
-        - 更新 `self.objects`: 包含每个子网格元数据的 Object 列表。
-        - 更新 `self.status`: 设置为 Status.NORMAL。
-
-        注意：
-        - 此过程会修改内部状态，是几何处理的初始化步骤。
-        - 依赖 `self.model` 和 `self.acc`。
+        合并模型中的所有网格对象为一个全局几何体，并执行：
+        - 顶点全局去重（跨 mesh）
+        - 三角形全局去重（跨 mesh）
+        - Object -> 全局三角形索引映射构建
         """
+
+        # --------------------------
+        # 全局容器
+        # --------------------------
         vertex_map: Dict[Tuple[int, int, int], int] = {}
         global_vertices: List[np.ndarray] = []
-        all_triangles = []
+        all_triangles: List[Tuple[int, int, int]] = []
+
         global_v_count = 0
         global_t_count = 0
 
+        # 使用类级别的 triangle_index_map（关键修正点）
+        self.triangle_index_map = {}
+
         # --------------------------
-        # 1. Merge all meshes (合并所有网格)
+        # 遍历所有 mesh
         # --------------------------
         for mesh in tqdm(self.model.meshes, desc="Normalizing meshes"):
-            # 深拷贝以避免修改原始模型数据
+            # 深拷贝，避免污染原始模型
             verts = deepcopy(mesh.vertices)
             tris  = deepcopy(mesh.triangles)
 
-            # quantize to integer grid (量化至整数网格)
-            # 乘以 10^acc 并转为 int64，确保坐标精度一致性
+            # --------------------------
+            # 顶点量化（float → int）
+            # --------------------------
             verts = np.round(verts, self.acc) * (10 ** self.acc)
             verts = verts.astype(np.int64)
 
-            local_to_global = {}
+            # local -> global 顶点映射
+            local_to_global: Dict[int, int] = {}
 
-            # unify vertices (统一顶点)
-            # 遍历当前网格的所有顶点，建立本地索引到全局索引的映射
             for i, v in enumerate(verts):
                 key = tuple(v.tolist())
-                # 检查顶点是否已在全局映射中存在
                 if key not in vertex_map:
                     vertex_map[key] = global_v_count
                     global_vertices.append(v)
                     global_v_count += 1
                 local_to_global[i] = vertex_map[key]
 
-            # remap triangles (重映射三角形)
-            # 将三角形引用的本地顶点索引转换为全局顶点索引
-            obj_triangle_indices = []
+            # --------------------------
+            # 三角形重映射 & 全局去重
+            # --------------------------
+            obj_triangle_indices: List[int] = []
+
             for t in tris:
                 gtri = (
                     local_to_global[int(t[0])],
                     local_to_global[int(t[1])],
                     local_to_global[int(t[2])]
                 )
-                
-                # Deduplication logic (Triangles unique with frozenset)
-                # 使用排序后的元组作为键，代表顶点集合的唯一性
+
+                # 忽略方向的三角形唯一键
                 key = tuple(sorted(gtri))
-                
+
                 if key not in self.triangle_index_map:
                     self.triangle_index_map[key] = global_t_count
                     all_triangles.append(gtri)
                     global_t_count += 1
-                
-                # 获取全局索引（可能是新建的，也可能是复用的）
-                idx = self.triangle_index_map[key]
-                obj_triangle_indices.append(idx)
 
-            # 创建对应的几何对象实例
+                obj_triangle_indices.append(self.triangle_index_map[key])
+
+            # --------------------------
+            # 构建 Object
+            # --------------------------
             obj = Object()
-            # 初始化对象属性，记录其在全局数据中的三角形索引列表
             obj.update(
-                triangles_ids=np.array(obj_triangle_indices, dtype=np.int64),
+                triangles_ids=np.asarray(obj_triangle_indices, dtype=np.int64),
                 id=mesh.id,
                 color=deepcopy(mesh.color),
                 acc=self.acc,
@@ -209,21 +213,153 @@ class Geom:
             )
 
             self.objects.append(obj)
-        
-        # 转换为 NumPy 数组以优化后续计算性能
-        self.vertices = np.asarray(global_vertices, dtype=np.int64)
+            self.obj_by_id[obj.id] = obj
+
+        # --------------------------
+        # 转为 NumPy 数组
+        # --------------------------
+        self.vertices  = np.asarray(global_vertices, dtype=np.int64)
         self.triangles = np.asarray(all_triangles, dtype=np.int64)
         self.status = Status.NORMAL
+        
 
 
-    def __sort__(self,vert_order:VerticesOrder=VerticesOrder.ZYX,tri_order:TrianglesOrder=TrianglesOrder.P132):
-        self.vertices_order=vert_order
-        self.vertices=self.vertices[:,::-1]
-        self.triangles=self.triangles[:,::-1]
-        self.triangles_order=tri_order
+    def __sort__(
+        self,
+        vert_order: VerticesOrder = VerticesOrder.ZYX,
+        tri_order: TrianglesOrder = TrianglesOrder.P132,
+    ):
+        self.status = Status.SORTING
 
-    def visualize_union(self):
-        visualize_vertices_and_triangles(self.vertices,self.triangles)
+        vertices = np.asarray(self.vertices, dtype=np.int64)
+        triangles = np.asarray(self.triangles, dtype=np.int64)
+
+        # ===============================
+        # 1. Vertex sort
+        # ===============================
+        if vert_order == VerticesOrder.ZYX:
+            order_vertices = np.lexsort((vertices[:, 0], vertices[:, 1], vertices[:, 2]))
+        else:
+            raise NotImplementedError(f"Unsupported VerticesOrder: {vert_order}")
+
+        self.vertices = vertices[order_vertices]
+
+        inv_vertices = np.empty_like(order_vertices)
+        inv_vertices[order_vertices] = np.arange(len(order_vertices), dtype=np.int64)
+        triangles = inv_vertices[triangles]
+
+        # ===============================
+        # 2. Triangle sort
+        # ===============================
+        if tri_order == TrianglesOrder.P132:
+            triangles = np.sort(triangles, axis=1)
+            order_triangles = np.lexsort((triangles[:, 2], triangles[:, 1], triangles[:, 0]))
+        else:
+            raise NotImplementedError(f"Unsupported TrianglesOrder: {tri_order}")
+
+        self.triangles = triangles[order_triangles]
+
+        inv_triangles = np.empty_like(order_triangles)
+        inv_triangles[order_triangles] = np.arange(len(order_triangles), dtype=np.int64)
+        objects_len=len(self.objects)
+        for i,obj in enumerate(self.objects):
+            obj.tri_id2geom_tri_id = np.sort(inv_triangles[obj.tri_id2geom_tri_id])
+            obj.triangles_ids_order = tri_order
+            obj.triangles=self.vertices[self.triangles[obj.tri_id2geom_tri_id]]
+            obj.vertices=[]
+            p_id=0
+            obj.tri_id2vex_ids=[]
+            obj.vex_id2tri_ids={}
+            for tri_id,tri in enumerate(obj.triangles.tolist()):
+                t_p_ids=[]
+                for p in tri:
+                    if p in obj.vertices:
+                        p_id=obj.vertices.index(p)
+                    else:
+                        obj.vertices.append(p)
+                        p_id+=1
+                    t_p_ids.append(p_id)
+                    obj.vex_id2tri_ids.setdefault(p_id,[]).append(tri_id)
+                obj.tri_id2vex_ids.append(t_p_ids)
+            sys.stdout.write(f"\rUpdating triangles_ids of object {i+1}/{objects_len}"+" "*30+"\r")
+            sys.stdout.flush()
+            obj.ensure_bvh()
+            obj.aabb=obj.bvh.aabb
+        aabb=obj.bvh.aabb
+        for i,obj in enumerate(self.objects):
+            if i==0:
+                continue
+            aabb_current=obj.bvh.aabb
+            aabb=aabb.merge(aabb_current)
+        self.AABB=aabb
+        self.status = Status.SORTED
+        pass
+        #To do:保存self 
+
+
+
+            
+    def __build_object_contact_graph(self):
+        # build AABB
+        if self.status!=Status.SORTED:
+            self.__sort__()
+        self.status=Status.UPDATING
+        # build tmp object_adj_graph_dict
+        object_adj_graph_dict={}
+        len_objects=len(self.objects)
+        for i in range(len_objects):
+            obj1=self.objects[i]
+            for j in range(i+1,len_objects):
+                obj2=self.objects[j]
+                if not obj1.aabb.overlap(obj2.aabb):
+                    continue
+                object_adj_graph_dict.setdefault(obj1.id,set()).add(obj2.id)
+                object_adj_graph_dict.setdefault(obj2.id,set()).add(obj1.id)
+                pass
+        visited=set()
+        candidate_pairs_dict={}
+        for target_obj,adj_objs in object_adj_graph_dict.items():
+            if target_obj in visited:
+                continue
+            visited.add(target_obj)
+            for adj_obj in list(adj_objs):
+                if adj_obj in visited:
+                    continue
+                sys.stdout.write(f"\rUpdating contact graph of object {target_obj} and {adj_obj}"+" "*30+"\r")
+                sys.stdout.flush()
+                candidate_pairs=self.check_contact(target_obj,adj_obj)
+                if candidate_pairs == []:
+                    object_adj_graph_dict[target_obj].remove(adj_obj)
+                    object_adj_graph_dict[adj_obj].remove(target_obj)
+                    continue
+                if target_obj>adj_obj:
+                    key=(adj_obj,target_obj)
+                    candidate_pairs=[(b, a) for a, b in candidate_pairs]
+                else:
+                    key=(target_obj,adj_obj)
+                candidate_pairs_dict[key]=candidate_pairs
+        self.object_adj_graph_dict=object_adj_graph_dict
+        self.candidate_pairs_dict=candidate_pairs_dict
+        
+                
+    
+    def check_contact(self,obj1_id:int,obj2_id:int):
+        obj1=self.obj_by_id[obj1_id]
+        obj2=self.obj_by_id[obj2_id]
+        # BVH Query
+        if obj1.bvh and obj2.bvh:
+            candidate_pairs = query_obj_bvh(obj1,obj2)
+            return candidate_pairs
+        
+        return []
+
+
+
+                
+        
+        
+
+            
 
     def show(self,visualizer:Optional["IVisualizer"]=None,visualizer_type:Optional[VisualizerType]=None,**kwargs):
         """
@@ -322,7 +458,7 @@ def normalize_meshes(model, acc: int):
             all_triangles.append(gtri)
             global_t_count+=1
         end=global_t_count
-        obj.triangles_ids=np.arange(start,end,dtype=np.int64)
+        obj.tri_id2geom_tri_id=np.arange(start,end,dtype=np.int64)
         obj.color=(color)
         self.objects.append(obj)
 

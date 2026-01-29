@@ -7,9 +7,9 @@ except ImportError:
 import numpy as np
 from .visualizer_interface import IVisualizer
 from ..file_parser.mesh_data import MeshData
-from typing import Union,Optional
-from ..geometry_kernel import Geom,Object
-
+from typing import Union,Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..geometry_kernel import Geom, Object
 
 class PyVistaVisualizer(IVisualizer):
     """
@@ -29,7 +29,7 @@ class PyVistaVisualizer(IVisualizer):
         except Exception as e:
             # Fallback or re-raise depending on policy. Here we re-raise to let caller handle it.
             raise RuntimeError(f"Failed to initialize PyVista Plotter: {e}")
-    def addObject(self,geom:Geom,object:Object,triangles_ids=None,opacity:float=0.5,color=None):
+    def addObject(self,geom:"Geom",object:"Object",triangles_ids=None,opacity:float=0.5,color=None):
         """
         Add object to PyVista plotter.
         """
@@ -37,7 +37,7 @@ class PyVistaVisualizer(IVisualizer):
         if color is None:
             color=object.color
         if triangles_ids is None:
-            triangles_ids=object.triangles_ids
+            triangles_ids=object.tri_id2geom_tri_id
         
         if triangles_ids is None:
              import logging
@@ -49,7 +49,7 @@ class PyVistaVisualizer(IVisualizer):
     
     def add(
         self,
-        obj: Union[MeshData,Geom, pv.PolyData],
+        obj: Union[MeshData,"Geom", pv.PolyData],
         opacity: float = 0.5,
         **kwargs
     ):
@@ -64,7 +64,7 @@ class PyVistaVisualizer(IVisualizer):
             vertices=mesh.vertices
             opacity=kwargs.get("opacity",opacity)
             self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=mesh.color_tuple,opacity=opacity)
-        elif isinstance(obj, Geom):
+        elif hasattr(obj, 'objects') and hasattr(obj, 'vertices'):  # Duck typing for Geom
             geom=obj
             object_list= kwargs.get("object_list",[])
             opacity_list= kwargs.get("opacity_list",[])
