@@ -61,7 +61,7 @@ class Object:
     def visualize(self,vertices,triangles):
         visualize_vertices_and_triangles(self.vertices[self.tri_id2geom_tri_id],self.triangles[self.tri_id2geom_tri_id])
 
-    def update(self, **kwargs):
+    def  update(self, **kwargs):
         for k, v in kwargs.items():
             if hasattr(self, k):
                 setattr(self, k, v)
@@ -205,7 +205,7 @@ class Geom:
             # --------------------------
             obj = Object()
             obj.update(
-                triangles_ids=np.asarray(obj_triangle_indices, dtype=np.int64),
+                tri_id2geom_tri_id=np.asarray(obj_triangle_indices, dtype=np.int64),
                 id=mesh.id,
                 color=deepcopy(mesh.color),
                 acc=self.acc,
@@ -270,8 +270,9 @@ class Geom:
             p_id=0
             obj.tri_id2vex_ids=[]
             obj.vex_id2tri_ids={}
-            for tri_id,tri in enumerate(obj.triangles.tolist()):
-                t_p_ids=[]
+            obj_triangles=obj.triangles.tolist()[0]
+            for tri_id, tri in tqdm(enumerate(obj_triangles), desc=f"Updating object {i}/{objects_len}",total=len(obj_triangles), leave=False):
+                t_p_ids = []
                 for p in tri:
                     if p in obj.vertices:
                         p_id=obj.vertices.index(p)
@@ -281,7 +282,7 @@ class Geom:
                     t_p_ids.append(p_id)
                     obj.vex_id2tri_ids.setdefault(p_id,[]).append(tri_id)
                 obj.tri_id2vex_ids.append(t_p_ids)
-            sys.stdout.write(f"\rUpdating triangles_ids of object {i+1}/{objects_len}"+" "*30+"\r")
+            sys.stdout.write(f"\rUpdating...................................building BVH {i+1}/{objects_len}"+"\r")
             sys.stdout.flush()
             obj.ensure_bvh()
             obj.aabb=obj.bvh.aabb

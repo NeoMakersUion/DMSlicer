@@ -56,7 +56,7 @@ def build_bvh(triangles: np.ndarray) -> BVHNode:
     def process_print(finished, total=total_Node):
         percentage=int(finished/total*100)
         sys.stdout.write(
-            f"\rProgress:{percentage}%|{finished}/{total}"+" "*30+"\r"
+            f"\rProgress:{percentage}%|{finished}/{total}"+" "*10+"\r"
         )
         if finished >= total:
             sys.stdout.write("\r")
