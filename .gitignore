@@ -84,3 +84,7 @@ htmlcov/
 .obsidian/
 test.txt
 tmp.bat
+
+# 临时数据
+data/
+screenshots/

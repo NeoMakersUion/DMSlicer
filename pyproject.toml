@@ -6,11 +6,43 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.2.6",
+    "pandas>=2.3.3",
     "pathlib>=1.0.1",
+    "pyarrow>=23.0.0",
     "pyclipper>=1.4.0",
-    "pyvista>=0.46.5",
+    "pyvista[jupyter]>=0.46.5",
     "tqdm>=4.67.1",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.4",
+  "mypy>=1.10"
+]
+viz = [
+  "vtk>=9.3",
+  "pyvista[jupyter]>=0.46.5"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["test"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["**/.venv/**"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+strict_optional = false
