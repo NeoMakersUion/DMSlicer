@@ -5,7 +5,6 @@ __license__ = "MIT"
 
 from .config import  DEFAULT_VISUALIZER_TYPE, GEOM_ACC, VisualizerType
 from .geom_kernel import GEOM_ACC, GeometryKernel
-from .intersection import clip_segment_by_aabb, intersect_triangle_triangle, intersect_triangle_with_plane
 from .canonicalize import DEFAULT_VISUALIZER_TYPE, GEOM_ACC, Geom, IdOrder, Object, Status, TrianglesOrder, VerticesOrder, normalize_meshes
 from .part import InterFaceResult, Part
 from .spatial_index import SpatialIndex
