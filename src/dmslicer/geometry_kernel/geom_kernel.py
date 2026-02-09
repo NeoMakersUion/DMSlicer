@@ -22,9 +22,6 @@ from ..file_parser.model import Model
 from .canonicalize import Geom
 from .topology3d import Topology3D
 from .spatial_index import SpatialIndex
-from .intersection import (
-    intersect_triangle_with_plane,
-)
 
 from .config import GEOM_ACC
 
@@ -55,7 +52,8 @@ class GeometryKernel:
         # Step 1: normalize all meshes into one global mesh
         self.geom = Geom(model,acc)
         
-        self.geom.show() 
+        # self.geom.show() 
+        pass
         # # Step 2: build topology (adjacency)
         # self.topology = Topology3D(self.triangles)
 
