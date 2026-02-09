@@ -57,6 +57,20 @@ class IVisualizer(ABC):
         """
         pass
 
+    @abstractmethod
+    def save(self, file_path: Optional[str] = None, **kwargs):
+        """
+        Render the scene and save to a file.
+        
+        Args:
+            file_path: Target file path (e.g., 'output.png'). 
+                       If None, a default filename with timestamp will be generated in a default directory.
+            **kwargs: Additional options (e.g., window_size, transparent_background).
+        """
+        pass
+
+
+
 
     @staticmethod
     def create(visualizer_type: Optional[VisualizerType] = DEFAULT_VISUALIZER, **kwargs) -> "IVisualizer":
