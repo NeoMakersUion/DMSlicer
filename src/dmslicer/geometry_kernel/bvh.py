@@ -106,21 +106,27 @@ def build_bvh(triangles: np.ndarray) -> BVHNode:
 
     return _build(tri_indices)
 from ..tools.progress_bar import RecursionSpinner 
-def query_obj_bvh(obj1,obj2):
+def query_obj_bvh(obj1,obj2,**kwargs):
     spinner = RecursionSpinner(interval=0.1, max_dots=12)
     def query_bvh(node1: BVHNode, node2: BVHNode) -> List[Tuple[int, int]]:
         nonlocal spinner
-        spinner.tick()   # ⭐ 非常关键：但不会每次都输出
-
+        spinner.tick()
         results = []
+        
+        # 1. Base case: Check for None nodes
+        if node1 is None or node2 is None:
+            return results
 
+        # 2. Pruning: Check AABB overlap
         if not node1.aabb.overlap(node2.aabb):
             return results
 
+        # 3. Leaf check
         if node1.is_leaf and node2.is_leaf:
             results.append((node1.tri_index, node2.tri_index))
             return results
 
+        # 4. Recursion
         if node1.is_leaf:
             results.extend(query_bvh(node1, node2.left))
             results.extend(query_bvh(node1, node2.right))
@@ -132,7 +138,6 @@ def query_obj_bvh(obj1,obj2):
             results.extend(query_bvh(node1.left, node2.right))
             results.extend(query_bvh(node1.right, node2.left))
             results.extend(query_bvh(node1.right, node2.right))
-
         return results
     result=query_bvh(obj1.bvh,obj2.bvh)
     spinner.done()
