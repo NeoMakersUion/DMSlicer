@@ -875,7 +875,7 @@ class Geom:
         import os
         import pandas as pd
 
-        def build_patch_graph(obj,tri_ids,df,tri_col,cover_col):
+        def build_patch_graph(obj,tri_ids,df,tri_col):
             """
             构建单对象的“面片邻接统计图”并返回字典形式的图结构。
             
@@ -915,17 +915,28 @@ class Geom:
             - 邻接集合来源于三角形 topology['edges'] 的值集合，并与 tri_ids 取交集以保持一致性
             """
             g = {}
+            if tri_col == "tri1":
+                cover_col = "cover1"
+                adj_tri_col= "tri2"
+            elif tri_col == "tri2":
+                cover_col = "cover2"
+                adj_tri_col= "tri1"
+            else:
+                raise ValueError(f"tri_col must be 'tri1' or 'tri2', but got {tri_col}")
             # ---------- 一阶：adj + deg + cover ----------
             for tri_id in tqdm(tri_ids,desc="build_patch_graph_deg",total=len(tri_ids),leave=False):
                 df_tri = df[df[tri_col] == tri_id]
 
                 df_true  = df_tri[df_tri['area_pass'] == True]
                 df_false = df_tri[df_tri['area_pass'] == False]
-
-                cover_true  = {"area": df_true[cover_col].sum(),
-                            "list": df_true[df_true.columns.difference([tri_col])].values.tolist()}
-                cover_false = {"area": df_false[cover_col].sum(),
-                            "list": df_false[df_false.columns.difference([tri_col])].values.tolist()}
+                adj_tri_ids_in_df_true = list(set(df_true[adj_tri_col]))
+                cover_true  = {"area_ratio": df_true[cover_col].sum(),
+                            "area_acc": df_true['intersection_area'].sum(),
+                            "adj_tri_ids": adj_tri_ids_in_df_true}
+                adj_tri_ids_in_df_false = list(set(df_false[adj_tri_col]))
+                cover_false = {"area_ratio": df_false[cover_col].sum(),
+                            "area_acc": df_false['intersection_area'].sum(),
+                            "adj_tri_ids": adj_tri_ids_in_df_false}
 
                 tri = obj.triangles[tri_id]
                 adj_all = list(tri.topology['edges'].values())
@@ -978,8 +989,8 @@ class Geom:
             df_true = df[df['area_pass'] == True]
             tri1=list(set(df_true['tri1']))
             tri2=list(set(df_true['tri2']))
-            g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1", cover_col="cover1")
-            g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2", cover_col="cover2")
+            g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1")
+            g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
             single_g1 = {k:v["adj"] for k,v in g1.items() if len(v["adj"]) == 1}
             single_g2 = {k:v["adj"] for k,v in g2.items() if len(v["adj"]) == 1}
             pass  
