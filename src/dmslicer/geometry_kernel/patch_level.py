@@ -10,9 +10,10 @@ class Patch:
 
     def __init__(self, obj1, obj2, g1: Dict, g2: Dict):
         self.obj_pair = (obj1.id, obj2.id)
-        self._raw_g_pair = [g1, g2]
-        self.patch = []
+        self._raw_g_pair = {obj1.id: g1, obj2.id: g2}
+        self.patch = {obj1.id: [], obj2.id: []}
         self.component_detect(g1, g2)
+        self.split_patch_with_norm_deg_ddeg(obj1,obj2)
 
     @staticmethod
     def bfs_search_patch(graph_raw_data: Dict[int, List[int]]) -> List[List[int]]:
@@ -60,9 +61,11 @@ class Patch:
                         component_g1['adj'].append(id_g2)
                         component_g2['adj'].append(id_g1)
                         break
-        self.patch=[g1_res, g2_res]
+        obj1_id,obj2_id=self.obj_pair
+        self.patch={obj1_id: g1_res, obj2_id: g2_res}
         pass
-
-
-                
+    
+    def split_patch_with_norm_deg_ddeg(self,obj1,obj2):
+        pass
+        
         
