@@ -975,6 +975,7 @@ class Geom:
                 elem["ddeg"] = float(np.max(dds)) if dds else None
             return g
         
+        patch_level_result = {}
         for obj_pair,file_name in tqdm(res.items(),desc="build_patch_graph",total=len(res),leave=False):
             if isinstance(obj_pair, str):
                 obj_pair_str=obj_pair
@@ -991,9 +992,9 @@ class Geom:
             tri2=list(set(df_true['tri2']))
             g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1")
             g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
-            single_g1 = {k:v["adj"] for k,v in g1.items() if len(v["adj"]) == 1}
-            single_g2 = {k:v["adj"] for k,v in g2.items() if len(v["adj"]) == 1}
-            pass  
+            from .patch_level import Patch
+            patch=Patch(obj1,obj2,g1,g2)
+            patch_level_result[(obj1.id, obj2.id)] = {"patch": patch}
 
             
         return patch_level_result,output_dir
