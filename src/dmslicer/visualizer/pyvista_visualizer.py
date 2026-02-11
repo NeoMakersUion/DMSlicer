@@ -53,7 +53,7 @@ class PyVistaVisualizer(IVisualizer):
         Add triangle to PyVista plotter.
         """
         if color is None:
-            color=triangle.color
+            color="red"
         vertices=triangle.vertices.astype(np.float32)
         triangles=np.array([[0,1,2]])
         self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity)

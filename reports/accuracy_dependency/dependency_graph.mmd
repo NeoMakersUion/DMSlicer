@@ -1,0 +1,13 @@
+graph TD
+    A["src/dmslicer/default_config.py"] -->|direct| B["src/dmslicer/geometry_kernel/config.py"]
+    A -->|direct| C["src/dmslicer/visualizer/config.py"]
+    B -->|indirect (precision)| D["src/dmslicer/geometry_kernel/canonicalize.py"]
+    B -->|indirect (precision)| E["src/dmslicer/geometry_kernel/intersection.py"]
+    B -->|indirect (precision)| F["src/dmslicer/geometry_kernel/geom_kernel.py"]
+    B -->|indirect| G["src/dmslicer/geometry_kernel/__init__.py"]
+
+    %% Highlight precision-related edges
+    linkStyle 1 stroke:#d33,stroke-width:2px
+    linkStyle 2 stroke:#d33,stroke-width:2px
+    linkStyle 3 stroke:#d33,stroke-width:2px
+*** End Patch``` to=functions.apply_patch━━━━

@@ -1,14 +1,27 @@
+"""
+DMSlicer · Geometry Canonicalization
+构建归一化几何、缓存与邻接图
+
+This module normalizes mesh data, builds geometry caches, and constructs
+adjacency graphs used by patch-level expansion in the geometry kernel.
+作者: QilongJiang
+日期: 2026-02-11
+"""
 import numpy as np
 from copy import deepcopy
 from typing import Dict, Tuple, List, Union, Optional, TYPE_CHECKING, Any
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, OrderedDict, deque
 from tqdm import tqdm
+import logging
+from datetime import datetime
+import sys
 from dataclasses import dataclass,field
 import sys
 import threading
 import time
 import pickle
 from pathlib import Path
+from .config import GEOM_ACC,PROCESS_ACC
 
 if TYPE_CHECKING:
     from ..file_parser import Model
@@ -19,7 +32,7 @@ from .config import GEOM_ACC,DEFAULT_VISUALIZER_TYPE,GEOM_PARALLEL_ACC,SOFT_NORM
 from enum import Enum
 from .bvh import BVHNode,query_obj_bvh, AABB, build_bvh
 from ..file_parser.workspace_utils import get_workspace_dir
-EPSILON=10**(-GEOM_ACC)
+EPSILON=1
 class Status(Enum):
     NORMAL=0
     SORTING=1
@@ -171,6 +184,7 @@ class Object:
     __hash_id:Optional[str]=None
     aabb: Optional[AABB] = None
     bvh: Optional[BVHNode] = None
+    components: Optional[List[List[int]]] = None
 
     @property
     def hash_id(self) -> str:
@@ -209,6 +223,104 @@ class Object:
             self.triangle_ids_order,
             self.status
         ))
+    def graph_build(self, include_tri_ids: Optional[List[int]] = None, exclude_tri_ids: Optional[List[int]] = None) -> Dict[int, List[int]]:
+        """
+        Build an induced adjacency graph for selected triangles.
+        构建所选三角形集合的诱导邻接图。
+        
+        Args:
+            include_tri_ids (Optional[List[int]]): Triangle IDs to include. If None, include all.
+                                                   指定需要包含的三角形ID；为 None 时默认包含全部。
+            exclude_tri_ids (Optional[List[int]]): Triangle IDs to exclude from the final graph.
+                                                   指定需要排除的三角形ID。
+        Returns:
+            Dict[int, List[int]]: Mapping from triangle ID to sorted list of adjacent triangle IDs
+                                  within the induced subgraph.
+                                  返回：三角形ID到其邻接三角形ID（排序后）的映射。
+        Raises:
+            None (robust against invalid IDs / missing topology entries).
+            无显式异常（对非法ID与缺失拓扑信息保持鲁棒性，不中断）。
+        Complexity:
+            O(N + E log E) where N = number of selected triangles, E = total adjacency entries examined.
+            复杂度约为 O(N + E log E)，其中 N 为选定三角数量、E 为检查的邻接条目数（排序引入 log 因子）。
+        """
+        # Determine candidate set
+        # 计算候选集合（确保ID有效且去重）
+        tri_count = len(self.triangles)
+        if include_tri_ids is not None:
+            tri_ids = [int(i) for i in include_tri_ids if 0 <= int(i) < tri_count]
+        else:
+            tri_ids = list(range(tri_count))
+        if exclude_tri_ids:
+            exclude_set = {int(i) for i in exclude_tri_ids if 0 <= int(i) < tri_count}
+            tri_ids = [i for i in tri_ids if i not in exclude_set]
+
+        graph: Dict[int, List[int]] = {}
+        tri_ids_set = set(tri_ids)
+
+        # Induced adjacency: keep neighbors that also lie in tri_ids_set; sort for determinism
+        # 诱导邻接：仅保留位于候选集合中的邻居；排序以保证可复现性
+        for tri_id in tqdm(tri_ids,desc="Building graph",total=len(tri_ids),leave=False):
+            try:
+                adj_vals = self.triangles[tri_id].topology['edges'].values()
+                raw_adj_list = sorted({int(t) for t in adj_vals if int(t) in tri_ids_set})
+                if raw_adj_list:
+                    graph[tri_id] = raw_adj_list
+            except Exception:
+                # Skip invalid topology/index to keep function robust and non-throwing
+                # 忽略异常以保持函数鲁棒且不抛出新异常
+                continue
+        return graph
+    def connected_components(self, graph: Optional[Dict[int, List[int]]] = None) -> List[List[int]]:
+        if graph is None:
+            graph = getattr(self, "graph", {})
+        total_nodes = len(graph.keys())
+        logger = logging.getLogger("progress.connected_components")
+        visited: set[int] = set()
+        components: List[List[int]] = []
+        last_len = 0
+        last_msg_len = 0
+
+        def _update_progress(cur: int, total: int) -> None:
+            pct = 0.0 if total == 0 else round(cur / total * 100, 2)
+            msg = "."*11+f"进度: {cur}/{total} ({pct}%)"+ "\r"
+            # inline refresh without newline, emulate tqdm leave=False
+            # 原地刷新不换行，模拟 tqdm 的 leave=False 行为
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+            # carriage return to start, overwrite with spaces, and return
+            if cur == total:
+                sys.stdout.write("\r" + (" " * len(msg)) + "\r")
+                sys.stdout.flush()
+            # record for final clear
+            nonlocal last_msg_len
+            last_msg_len = len(msg)
+
+        for tri_id in sorted(graph.keys()):
+            if tri_id in visited:
+                continue
+            component: List[int] = []
+            component: List[int] = []
+            q = deque([tri_id])
+            while q:
+                current = q.popleft()
+                if current in visited:
+                    continue
+                visited.add(current)
+                cur_len = len(visited)
+                if cur_len > last_len:
+                    _update_progress(cur_len, total_nodes)
+                    last_len = cur_len
+                component.append(current)
+                for nb in graph.get(current, []):
+                    if nb not in visited:
+                        q.append(nb)
+            components.append(component)
+        # final clear (tqdm leave=False semantics)
+        if last_msg_len > 0:
+            sys.stdout.write(" " * last_msg_len + "\r")
+            sys.stdout.flush()
+        return components
     def ensure_bvh(self):
         """
         Ensure the BVH is built and object is sorted.
@@ -221,57 +333,81 @@ class Object:
         triangles=self.vertices[self.tri_id2vert_id]
         self.bvh = build_bvh(triangles)
         pass
-    
+    def repair_degenerate_triangles(self,isoperimetric_ratio_threshold:int=1000,scale=10**GEOM_ACC):
+        
+        """
+        Repair degenerate triangles by removing them from the mesh.
+        Degenerate triangles are those with area close to zero or isoperimetric ratio close to zero.
+        """
+        pass
+
 import numpy as np
 # 确保Object类已导入，triangle_normal_vector函数可正常调用
 # from xxx import Object
 # from .intersection import triangle_normal_vector
-
+from .bvh import AABB
+scale = int(10 ** GEOM_ACC)                 # 坐标放大倍数
+min_edge_mm = 0.5 * (10 ** (-PROCESS_ACC))  # 例如 PROCESS_ACC=2 -> 0.005mm
+from .static_class import QualityGrade
 class Triangle:
+    user_min_edge = min_edge_mm * scale         # -> 50
     # ========== 第一部分：无默认值的必选属性（必须在前）==========
     vertices: np.ndarray          # 三角形顶点坐标 (3,3) - 必选，实例化时初始化
     vertex_ids: np.ndarray        # 三角形顶点ID (3,) - 必选，实例化时初始化
-    normal: np.ndarray            # 三角形法向量 (3,) - 必选，__post_init__中计算
+    normal: np.ndarray            # 三角形法向量 (3,) - 必选，process_edge_area_ESB中计算
     triangle_id: int              # 三角形唯一ID - 必选，实例化时传入
-    min_edge: float               # 三角形最小边长 - 必选，__post_init__中计算
+    min_edge: float               # 三角形最小边长 - 必选，process_edge_area_ESB中计算
     # ========== 第二部分：有默认值的可选属性（必须在后）==========
     edges: np.ndarray = None      # 三角形边向量 (3,3) - 可选，预留/后续赋值
     topology: Optional[Dict] = field(default_factory=dict)  # 顶点拓扑并集 - 可选，build_topology中赋值
-    area: float = None              # 三角形面积 - 可选，__post_init__中计算
-    isoperimetric_ratio: float = None  # 三角形等比系数 - 可选，__post_init__中计算
-
+    area: float = None              # 三角形面积 - 可选，process_edge_area_ESB中计算
+    aabb: AABB = None  # 三角形AABB - 可选，process_edge_area_ESB中计算
+    perimeter: float = None  # 三角形周长 - 可选，process_edge_area_ESB中计算
+    parametric_area_grade: QualityGrade = None  # 三角形等比系数等级 - 可选，process_edge_area_ESB中计算
+    errorESB_grade: QualityGrade = None  # 三角形ESB误差系数等级 - 可选，process_edge_area_ESB中计算
+    AhatESB_grade: QualityGrade = None  # 三角形ESB误差面积系数等级 - 可选，process_edge_area_ESB中计算
     def __init__(self, obj: Object, triangle_id: int):
         """实例化三角形，初始化基础必选属性"""
         self.vertices = obj.vertices[obj.tri_id2vert_id[triangle_id]]
+        from .bvh import triangle_aabb_from_coords
+        self.aabb=triangle_aabb_from_coords(self.vertices)
         self.vertex_ids = obj.tri_id2vert_id[triangle_id]
         self.triangle_id = triangle_id
-        
         # 初始化后处理：计算法向量、最小边长、边向量
-        self.__post_init__()
+        self.process_edge_area_ESB()
         # 构建拓扑关系：计算顶点两两三角面ID并集
         self.build_topology(obj)  
 
-    def __post_init__(self):
-        """初始化后处理：自动计算法向量、最小边长、边向量"""
+    def process_edge_area_ESB(self):
+        from .static_class import QualityGrade
         from .intersection import triangle_normal_vector
-        # 计算三角形法向量
         self.normal = triangle_normal_vector(self.vertices)
-        # 计算三条边的向量（顶点循环相减：v0-v2, v1-v0, v2-v1）
+
         diff_array = self.vertices - np.array([self.vertices[-1], self.vertices[0], self.vertices[1]])
-        # 计算三条边的长度，取最小值
-        edge_lengths = np.linalg.norm(diff_array, axis=1)
-        self.min_edge = np.min(edge_lengths)
-        # 赋值边向量属性，匹配类注解
         self.edges = diff_array
-        area = 0.5 * np.linalg.norm(np.cross(self.edges[0], self.edges[1]))
-        if area<0.5:
-            area=0
+
+        edge_lengths = np.linalg.norm(diff_array.astype(np.float64), axis=1)
+        self.min_edge = float(np.min(edge_lengths))
+        self.perimeter = float(np.sum(edge_lengths))
+
+        # area：避免 int64 cross 溢出
+        c = np.cross(self.edges[0].astype(np.float64), self.edges[1].astype(np.float64))
+        area = 0.5 * float(np.linalg.norm(c))
         self.area = area
-        self.perimeter = np.sum(np.linalg.norm(self.edges, axis=1))
-        if area!=0:
-            self.isoperimetric_ratio	= self.perimeter**2 / (np.pi * area)
-        else:
-            self.isoperimetric_ratio	= float('inf')
+
+        parametric_area_ratio = float('inf') if area <= 0 else (self.perimeter**2) / (np.pi * area)
+        self.parametric_area_grade = QualityGrade.classify(parametric_area_ratio, criteria=[12, 50, 400, 1000])
+
+
+        # ESB
+        L = float(self.aabb.diag)  # 确认与 vertices 同单位（放大域）
+        errorESB = max(float(Triangle.user_min_edge), L * 1e-10)
+        errorESB_ratio = float('inf') if self.min_edge <= 0 else (errorESB / self.min_edge)
+        self.errorESB_grade = QualityGrade.classify(errorESB_ratio, criteria=[0.1, 1, 2, 10])
+
+        AhatESB = 0.5 * float(np.max(edge_lengths)) * errorESB
+        AhatESB_ratio = float('inf') if self.area <= 0 else (AhatESB / self.area)
+        self.AhatESB_grade = QualityGrade.classify(AhatESB_ratio, criteria=[0.1, 1, 2, 10])
 
     def build_topology(self, obj: Object):
         """构建三角形拓扑关系：计算三个顶点两两对应的三角面ID并集"""
@@ -531,7 +667,10 @@ class Geom:
         inv_triangles = np.empty_like(order_triangles)
         inv_triangles[order_triangles] = np.arange(len(order_triangles), dtype=np.int64)
         objects_len=len(self.objects)
-        for i, obj in enumerate(self.objects.values()):
+        for i, obj in enumerate(tqdm(self.objects.values(), 
+                                         desc="Updating triangles indices", 
+                                         total=objects_len, 
+                                         leave=False)):
             obj.tri_id2geom_tri_id = np.sort(inv_triangles[obj.tri_id2geom_tri_id])
             obj.triangles_ids_order = tri_order
             obj.tri_id2vert_id=self.vertices[self.triangles[obj.tri_id2geom_tri_id]]
@@ -579,12 +718,17 @@ class Geom:
             # Update obj.triangles to be local indices instead of coordinates
             # This aligns with standard mesh representation (vertices + faces)
             obj.tri_id2vert_id = np.array(local_tri_indices, dtype=np.int64)
-            for tri_id in range(len(obj.tri_id2vert_id)):
+            for tri_id in tqdm(range(len(obj.tri_id2vert_id)), 
+                                         desc=f"Updating object {i+1}/{objects_len}", 
+                                         total=len(obj.tri_id2vert_id), 
+                                         leave=False):
                 tri=Triangle(obj,tri_id)
                 obj.triangles.append(tri)
                 # pass
             sys.stdout.write(f"\rUpdating...................................building BVH {i+1}/{objects_len}"+"\r")
             sys.stdout.flush()
+            obj.graph=obj.graph_build()
+            obj.components=obj.connected_components()
             obj.ensure_bvh()
             obj.aabb=obj.bvh.aabb
         
@@ -799,7 +943,12 @@ class Geom:
                 # -------------------------
                 # cover1/cover2：你定义的“tri1 被 tri2 覆盖比例 / tri2 被 tri1 覆盖比例”
                 # intersection_area：交叠面积（或投影交叠面积等）
-                cover1, cover2, intersection_area = overlap_area_3d(tri1, tri2)
+                if tri1.isoperimetric_ratio>1000 or tri2.isoperimetric_ratio>1000:
+                    cover1=0
+                    cover2=0
+                    intersection_area=0
+                else:
+                    cover1, cover2, intersection_area = overlap_area_3d(tri1, tri2)
 
                 # 保存 tri-pair 的统计结果
                 rows.append({
@@ -875,106 +1024,6 @@ class Geom:
         import os
         import pandas as pd
 
-        def build_patch_graph(obj,tri_ids,df,tri_col):
-            """
-            构建单对象的“面片邻接统计图”并返回字典形式的图结构。
-            
-            该函数基于三角形列表 tri_ids 与三角形对统计表 df（由上一阶段的 pair-level 计算生成），
-            为每个三角形计算：
-            - adj：与其共享边的邻接三角形且同时出现在 tri_ids 中
-            - deg：与邻接三角形法线的最大无向夹角（单位°，基于 abs(dot(n0, nj)) 计算；小于 1° 的角度视为 0；若无有效邻接则为 None）
-            - cover_area：按照 area_pass 筛选后的覆盖统计（true/false 两类，包含累计面积与对端三角列表）
-            同时在二阶统计中计算：
-            - ddeg：所有邻接三角形的 deg 差值的最大值（单位°；小于 1° 的差值视为 0；若不存在可比较的邻接 deg，则为 None）
-            
-            参数:
-                obj: 目标 Object，包含局部三角形数据与 topology 信息
-                tri_ids: 当前对象参与统计的三角形 ID 列表（来自 df_true 的 tri1/tri2 去重集合）
-                df: pandas.DataFrame，面片对统计表，至少包含 [tri_col, area_pass, cover_col] 等列
-                tri_col: 字段名，指示当前对象对应列，如 "tri1" 或 "tri2"
-                cover_col: 字段名，对应覆盖比例列，如 "cover1" 或 "cover2"
-            
-            返回:
-                dict[int, dict]: 
-                    {
-                      tri_id: {
-                        "adj": List[int],                # 邻接三角形 ID
-                        "deg": float,                    # 与邻接的最大法线夹角（°）
-                        "cover_area": {
-                            "true":  {"area": float, "list": List[List[int]]},
-                            "false": {"area": float, "list": List[List[int]]}
-                        },
-                        "ddeg": float                    # 与邻接的最大角差（°）
-                      },
-                      ...
-                    }
-            
-            说明:
-            - 法线夹角计算采用 abs(dot(n0, nj)) 并通过 np.clip 保证 arccos 入参在 [0,1]
-            - 角度与角差的“门槛”为 1°，用于抑制数值抖动；低于阈值记为 0
-            - 邻接集合来源于三角形 topology['edges'] 的值集合，并与 tri_ids 取交集以保持一致性
-            """
-            g = {}
-            if tri_col == "tri1":
-                cover_col = "cover1"
-                adj_tri_col= "tri2"
-            elif tri_col == "tri2":
-                cover_col = "cover2"
-                adj_tri_col= "tri1"
-            else:
-                raise ValueError(f"tri_col must be 'tri1' or 'tri2', but got {tri_col}")
-            # ---------- 一阶：adj + deg + cover ----------
-            for tri_id in tqdm(tri_ids,desc="build_patch_graph_deg",total=len(tri_ids),leave=False):
-                df_tri = df[df[tri_col] == tri_id]
-
-                df_true  = df_tri[df_tri['area_pass'] == True]
-                df_false = df_tri[df_tri['area_pass'] == False]
-                adj_tri_ids_in_df_true = list(set(df_true[adj_tri_col]))
-                cover_true  = {"area_ratio": df_true[cover_col].sum(),
-                            "area_acc": df_true['intersection_area'].sum(),
-                            "adj_tri_ids": adj_tri_ids_in_df_true}
-                adj_tri_ids_in_df_false = list(set(df_false[adj_tri_col]))
-                cover_false = {"area_ratio": df_false[cover_col].sum(),
-                            "area_acc": df_false['intersection_area'].sum(),
-                            "adj_tri_ids": adj_tri_ids_in_df_false}
-
-                tri = obj.triangles[tri_id]
-                adj_all = list(tri.topology['edges'].values())
-                adj = [t for t in adj_all if t in tri_ids]
-
-                # --- deg ---
-                n0 = tri.normal
-                degs = []
-                for j in adj:
-                    nj = obj.triangles[j].normal
-                    if n0 is None or nj is None:
-                        continue
-                    angle = np.degrees(
-                        np.arccos(np.clip(np.abs(np.dot(n0, nj)), 0.0, 1.0))
-                    )
-                    angle = angle if angle >= 1.0 else 0.0
-                    degs.append(angle)
-
-                g[tri_id] = {
-                    "adj": adj,
-                    "deg": float(np.max(degs)) if degs else None,
-                    "cover_area": {
-                        "true": cover_true,
-                        "false": cover_false
-                    }
-                }
-
-            # ---------- 二阶：ddeg ----------
-            for tri_id, elem in tqdm(g.items(),desc="build_patch_graph_ddeg",total=len(g),leave=False):
-                dds = []
-                for j in elem["adj"]:
-                    if j in g:
-                        dd = abs(elem["deg"] - g[j]["deg"])
-                        dd = dd if dd >= 1.0 else 0.0
-                        dds.append(dd)
-                elem["ddeg"] = float(np.max(dds)) if dds else None
-            return g
-        
         patch_level_result = {}
         for obj_pair,file_name in tqdm(res.items(),desc="build_patch_graph",total=len(res),leave=False):
             if isinstance(obj_pair, str):
@@ -987,13 +1036,8 @@ class Geom:
             obj2=self.objects[obj2]
             file_path = os.path.join(output_dir, file_name)
             df=pd.read_feather(file_path)
-            df_true = df[df['area_pass'] == True]
-            tri1=list(set(df_true['tri1']))
-            tri2=list(set(df_true['tri2']))
-            g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1")
-            g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
             from .patch_level import Patch
-            patch=Patch(obj1,obj2,g1,g2)
+            patch=Patch(obj1,obj2,df)
             patch_level_result[(obj1.id, obj2.id)] = {"patch": patch}
 
             

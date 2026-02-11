@@ -1,0 +1,18 @@
+variable,current_value,definition_file,reference_file,reference_line,reference_type,effect_summary,risk
+GEOM_ACC,6,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\config.py,28,direct via DEFAULTS,控制整数化与容差阈值,high
+GEOM_ACC,6,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\canonicalize.py,22,indirect via config,影响EPSILON与顶点量化,high
+GEOM_ACC,6,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\canonicalize.py,318,indirect via config,构造Geom参数默认值,medium
+GEOM_ACC,6,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\intersection.py,16,indirect via config,导入精度参与长度阈值计算,medium
+GEOM_ACC,6,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\intersection.py,22,indirect via config,影响LEN_EPSILON计算方式,medium
+GEOM_ACC,6,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\geom_kernel.py,44,indirect via config,默认构造精度,low
+GEOM_PARALLEL_ACC,1e-1,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\config.py,27,direct via DEFAULTS,并行/角度计算阈值,medium
+GEOM_PARALLEL_ACC,1e-1,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\canonicalize.py,318,indirect via config,Geom并行精度入参,low
+SOFT_NORMAL_GATE_ANGLE,25,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\config.py,32,direct via DEFAULTS,法线软门控角度,medium
+SOFT_NORMAL_GATE_ANGLE,25,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\canonicalize.py,775,indirect via config,剔除极端不共面对,medium
+INITIAL_GAP_FACTOR,0.01,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\config.py,36,direct via DEFAULTS,初始尺度化间隙比例,medium
+INITIAL_GAP_FACTOR,0.01,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\canonicalize.py,791,indirect via config,compute_gap阈值设定,medium
+MAX_GAP_FACTOR,0.5,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\config.py,37,direct via DEFAULTS,最大尺度化间隙比例,medium
+MAX_GAP_FACTOR,0.5,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\canonicalize.py,786,indirect via config,gap上限筛选,medium
+OVERLAP_RATIO_THRESHOLD,0.01,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\config.py,40,direct via DEFAULTS,重叠占比阈值,medium
+OVERLAP_RATIO_THRESHOLD,0.01,d:\DMSlicer\src\dmslicer\geometry_kernel\canonicalize.py,816,indirect via config,area_pass筛选标准,medium
+ACCULATE_ACC,8,d:\DMSlicer\src\dmslicer\default_config.py,d:\DMSlicer\src\dmslicer\geometry_kernel\config.py,13,indirect (fallback),备用精度未在主流程使用,low

@@ -8,11 +8,11 @@ DEFAULTS: Dict[str, Any] = {
     "DEFAULT_VISUALIZER": VisualizerType.PyVista,  # 默认可视化器
 
     # Geometry Kernel Defaults
-    "GEOM_ACC": 6,                   # 几何精度 (保留小数位数)
+    "GEOM_ACC": 4,                   # 几何精度 (保留小数位数)
     "GEOM_PARALLEL_ACC":1e-1,       # 计算三角形平时的精度 (角度阈值)
     
-    # ACCULATE Defaults
-    "ACCULATE_ACC":8, #计算时候的精度
+    # Processing Defaults
+    "PROCESS_ACC":2, #加工精度
 
     ## ===== Step 3-1: Soft Normal Gating (无向法线软门控) =====
     "SOFT_NORMAL_GATE_ANGLE": 25,  # 单位: 度 | 文档依据: "仅当 θ > 45° 时剔除"

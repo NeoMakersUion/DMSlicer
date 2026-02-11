@@ -3,9 +3,13 @@ from typing import List, Tuple, Optional
 import sys
 class AABB:
     def __init__(self, min_point, max_point):
-        self.min = np.array(min_point, dtype=np.float64)
-        self.max = np.array(max_point, dtype=np.float64)
-    
+        self.min = np.array(min_point, dtype=np.int64)
+        self.max = np.array(max_point, dtype=np.int64)
+    @property
+    def diag(self) -> np.ndarray:
+        """返回 AABB 对角线向量"""
+        return np.linalg.norm(self.max - self.min)
+
     def merge(self, other: 'AABB') -> 'AABB':
         """合并两个 AABB"""
         new_min = np.minimum(self.min, other.min)
@@ -37,6 +41,7 @@ class BVHNode:
         self.left: Optional['BVHNode'] = None
         self.right: Optional['BVHNode'] = None
         self.is_leaf = False
+
 def triangle_aabb_from_coords(tri: np.ndarray) -> AABB:
     """tri: (3, 3) array of vertex coordinates"""
     return AABB(np.min(tri, axis=0), np.max(tri, axis=0))
@@ -56,7 +61,7 @@ def build_bvh(triangles: np.ndarray) -> BVHNode:
     def process_print(finished, total=total_Node):
         percentage=int(finished/total*100)
         sys.stdout.write(
-            f"\rProgress:{percentage}%|{finished}/{total}"+" "*10+"\r"
+            f"\rProgress BVH:{percentage}%|{finished}/{total}"+" "*10+"\r"
         )
         if finished >= total:
             sys.stdout.write("\r")
