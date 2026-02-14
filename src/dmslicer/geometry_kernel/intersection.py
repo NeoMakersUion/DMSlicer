@@ -688,13 +688,55 @@ def overlap_area_3d_normal(tri1, tri2):
 
     def clip_triangle(subject, clip):
         """
-        Sutherland–Hodgman clipping for convex polygons (triangle vs triangle).
-        Assumes clip is CCW.
+        Sutherland–Hodgman polygon clipping (triangle vs triangle).
+        三角形与三角形的 Sutherland–Hodgman 多边形裁剪。
+        
+        Clips the subject polygon (triangle, possibly degenerate) against
+        a convex clipping polygon (triangle) assuming CCW ordering. Tolerance
+        EPS is a module-level threshold for robust half-plane tests.
+        
+        Args:
+            subject (np.ndarray): Shape (N, 2) float array of subject polygon
+                vertices in 2D. N ≥ 3; coordinates in the same projected plane.
+                2D 主多边形顶点数组，形状 (N,2)，N ≥ 3；与裁剪三角形同平面。
+            clip (np.ndarray): Shape (M, 2) float array of clipping polygon
+                vertices in CCW order. M = 3 for triangles; convex required.
+                2D 裁剪多边形顶点数组，形状 (M,2)，逆时针；三角形时 M=3，需凸。
+        
+        Returns:
+            np.ndarray: Shape (K, 2) float array of the clipped polygon
+                (possibly empty). 返回裁剪后的多边形顶点数组 (K,2)，可能为空。
+        
+        Raises:
+            None. Degenerate or parallel edges handled via EPS tolerance.
+            无异常；平行/退化边通过 EPS 容差处理。
+        
+        Complexity:
+            O(N * M) where N = subject vertices, M = clip edges (here 3).
+            时间复杂度 O(N*M)，本函数中 M=3。
+        
+        Examples:
+            >>> import numpy as np
+            >>> subj = np.array([[0., 0.], [2., 0.], [1., 2.]])
+            >>> clip = np.array([[0., 0.], [2., 0.], [2., 2.]])
+            >>> out = clip_triangle(subj, clip)
+            >>> out.shape[1] == 2
+            True
+            >>> np.all(out[:,0] <= 2.0 + 1e-9)
+            True
+            
+            >>> subj = np.array([[0., 0.], [1., 0.], [0.5, 0.5]])
+            >>> clip = np.array([[2., 2.], [3., 2.], [2.5, 3.]])
+            >>> out = clip_triangle(subj, clip)
+            >>> out.size == 0
+            True
         """
         def inside(p, a, b):
+            # NOTE: Half-plane test using signed area; EPS makes boundary robust.
             return ((b[0]-a[0])*(p[1]-a[1]) - (b[1]-a[1])*(p[0]-a[0])) >= -EPS
 
         def intersect(a, b, s, e):
+            # NOTE: Line intersection via param t on segment s→e; denom ~ 0 uses midpoint.
             se = e - s
             ab = b - a
             denom = se[0]*ab[1] - se[1]*ab[0]

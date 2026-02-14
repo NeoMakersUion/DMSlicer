@@ -22,7 +22,7 @@ import time
 import pickle
 from pathlib import Path
 from .config import GEOM_ACC,PROCESS_ACC
-
+import pandas as pd
 if TYPE_CHECKING:
     from ..file_parser import Model
     from ..visualizer import IVisualizer
@@ -33,313 +33,19 @@ from enum import Enum
 from .bvh import BVHNode,query_obj_bvh, AABB, build_bvh
 from ..file_parser.workspace_utils import get_workspace_dir
 EPSILON=1
-class Status(Enum):
-    NORMAL=0
-    SORTING=1
-    SORTED=2
-    UPDATING=3
-
-class VerticesOrder(Enum):
-    XYZ = 0
-    XZY = 1
-    YXZ = 2
-    YZX = 3
-    ZXY = 4
-    ZYX = 5
-
-class TrianglesOrder(Enum):
-    P123 = 0
-    P132 = 1
-    P213 = 2
-    P231 = 3
-    P312 = 4
-    P321 = 5
-
-class IdOrder(Enum):
-    ASC = 0
-    DESC = 1
+from .static_class import Status, VerticesOrder, TrianglesOrder, IdOrder, QualityGrade
+from .triangle import Triangle
 
 
-
-class ComputeCache:
-    """
-    A thread-safe, LRU-based cache mechanism for storing and retrieving 
-    Geom and Object computation results.
-    
-    Features:
-    - Thread-safe operations using threading.Lock
-    - LRU (Least Recently Used) eviction policy
-    - TTL (Time To Live) expiration
-    - Disk persistence using pickle
-    """
-    
-    def __init__(self, max_size: int = 10, ttl: int = 3600):
-        """
-        Initialize the cache.
-        
-        Args:
-            max_size (int): Maximum number of items in memory cache.
-            ttl (int): Time to live in seconds for cache items.
-        """
-        self._max_size = max_size
-        self._ttl = ttl
-        self._cache: OrderedDict = OrderedDict()
-        self._lock = threading.Lock()
-        
-    def get(self, key: str) -> Optional[Any]:
-        """
-        Retrieve an item from the cache.
-        
-        Args:
-            key (str): The unique identifier (hash_id).
-            
-        Returns:
-            Any: The cached value if found and valid, else None.
-        """
-        # 1. Check in-memory cache
-        with self._lock:
-            if key in self._cache:
-                entry = self._cache[key]
-                if time.time() - entry['time'] <= self._ttl:
-                    self._cache.move_to_end(key)
-                    return entry['value']
-                else:
-                    # Expired
-                    del self._cache[key]
-        
-        # 2. Check disk persistence
-        try:
-            ws_dir = get_workspace_dir()
-            file_path = ws_dir / key / f"{key}_sorted_geom.pkl"
-            
-            if file_path.exists():
-                with open(file_path, 'rb') as f:
-                    value = pickle.load(f)
-                
-                # Populate memory cache
-                self.set(key, value, save_to_disk=False)
-                return value
-        except Exception as e:
-            # Log error or silently fail
-            print(f"[Cache] Error loading {key}: {e}")
-            pass
-            
-        return None
-
-    def set(self, key: str, value: Any, save_to_disk: bool = True) -> None:
-        """
-        Store an item in the cache.
-        
-        Args:
-            key (str): The unique identifier.
-            value (Any): The value to store.
-            save_to_disk (bool): Whether to persist to disk.
-        """
-        with self._lock:
-            # Update/Add to memory
-            self._cache[key] = {
-                'value': value,
-                'time': time.time()
-            }
-            self._cache.move_to_end(key)
-            
-            # Evict if full
-            if len(self._cache) > self._max_size:
-                self._cache.popitem(last=False)
-        
-        # Persist to disk
-        if save_to_disk:
-            try:
-                ws_dir = get_workspace_dir()
-                save_dir = ws_dir / key
-                save_dir.mkdir(parents=True, exist_ok=True)
-                
-                file_path = save_dir / f"{key}_sorted_geom.pkl"
-                with open(file_path, 'wb') as f:
-                    pickle.dump(value, f)
-            except Exception as e:
-                print(f"[Cache] Error saving {key}: {e}")
-
-    def clear(self) -> None:
-        """Clear all in-memory cache items."""
-        with self._lock:
-            self._cache.clear()
+from ..cache.compute_cache import ComputeCache
+from .object_model import Object
 
 # Global cache instance
 GEOM_CACHE = ComputeCache(max_size=5, ttl=7200) # Keep 5 heavy Geoms in memory
 
 
 
-@dataclass
-class Object:
-    acc:int=GEOM_ACC
-    id:Optional[int]=None
-    vertices: Optional[np.ndarray] = None
-    tri_id2vert_id: Optional[np.ndarray] = None
-    triangles: Optional[list["Triangle"]] = field(default_factory=list)
-    tri_id2geom_tri_id: Optional[np.ndarray] = None       
-    triangle_ids_order:Optional[IdOrder]=None
-    color: Optional[np.ndarray] = None
-    status:Optional[Status]=None
-    __hash_id:Optional[str]=None
-    aabb: Optional[AABB] = None
-    bvh: Optional[BVHNode] = None
-    components: Optional[List[List[int]]] = None
-
-    @property
-    def hash_id(self) -> str:
-        if self.__hash_id is None:
-            self.__hash__()
-        return self.__hash_id
-
-    def show(self,include_triangles_ids=None,exclude_triangles_ids=None,opacity:float=0.5,color=None):
-        """
-        Show the object in the visualizer.
-        
-        Args:
-            include_triangles_ids (Optional[np.ndarray]): Triangles to include.
-            exclude_triangles_ids (Optional[np.ndarray]): Triangles to exclude.
-            opacity (float): Opacity of the object.
-            color (Optional[np.ndarray]): Color of the object.
-        """
-        from ..visualizer import IVisualizer
-        visualizer=IVisualizer.create()
-        visualizer.addObj(self,include_triangles_ids,exclude_triangles_ids,opacity,color)
-        visualizer.show()
-        
-
-    def  update(self, **kwargs):
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
-        self.__hash__()
-
-    def __hash__(self) -> None:
-        self.__hash_id = hash((
-            self.acc,
-            self.id,
-            self.tri_id2geom_tri_id.tobytes() if self.tri_id2geom_tri_id is not None else None,
-            self.color.tobytes() if self.color is not None else None,
-            self.triangle_ids_order,
-            self.status
-        ))
-    def graph_build(self, include_tri_ids: Optional[List[int]] = None, exclude_tri_ids: Optional[List[int]] = None) -> Dict[int, List[int]]:
-        """
-        Build an induced adjacency graph for selected triangles.
-        构建所选三角形集合的诱导邻接图。
-        
-        Args:
-            include_tri_ids (Optional[List[int]]): Triangle IDs to include. If None, include all.
-                                                   指定需要包含的三角形ID；为 None 时默认包含全部。
-            exclude_tri_ids (Optional[List[int]]): Triangle IDs to exclude from the final graph.
-                                                   指定需要排除的三角形ID。
-        Returns:
-            Dict[int, List[int]]: Mapping from triangle ID to sorted list of adjacent triangle IDs
-                                  within the induced subgraph.
-                                  返回：三角形ID到其邻接三角形ID（排序后）的映射。
-        Raises:
-            None (robust against invalid IDs / missing topology entries).
-            无显式异常（对非法ID与缺失拓扑信息保持鲁棒性，不中断）。
-        Complexity:
-            O(N + E log E) where N = number of selected triangles, E = total adjacency entries examined.
-            复杂度约为 O(N + E log E)，其中 N 为选定三角数量、E 为检查的邻接条目数（排序引入 log 因子）。
-        """
-        # Determine candidate set
-        # 计算候选集合（确保ID有效且去重）
-        tri_count = len(self.triangles)
-        if include_tri_ids is not None:
-            tri_ids = [int(i) for i in include_tri_ids if 0 <= int(i) < tri_count]
-        else:
-            tri_ids = list(range(tri_count))
-        if exclude_tri_ids:
-            exclude_set = {int(i) for i in exclude_tri_ids if 0 <= int(i) < tri_count}
-            tri_ids = [i for i in tri_ids if i not in exclude_set]
-
-        graph: Dict[int, List[int]] = {}
-        tri_ids_set = set(tri_ids)
-
-        # Induced adjacency: keep neighbors that also lie in tri_ids_set; sort for determinism
-        # 诱导邻接：仅保留位于候选集合中的邻居；排序以保证可复现性
-        for tri_id in tqdm(tri_ids,desc="Building graph",total=len(tri_ids),leave=False):
-            try:
-                adj_vals = self.triangles[tri_id].topology['edges'].values()
-                raw_adj_list = sorted({int(t) for t in adj_vals if int(t) in tri_ids_set})
-                if raw_adj_list:
-                    graph[tri_id] = raw_adj_list
-            except Exception:
-                # Skip invalid topology/index to keep function robust and non-throwing
-                # 忽略异常以保持函数鲁棒且不抛出新异常
-                continue
-        return graph
-    def connected_components(self, graph: Optional[Dict[int, List[int]]] = None) -> List[List[int]]:
-        if graph is None:
-            graph = getattr(self, "graph", {})
-        total_nodes = len(graph.keys())
-        logger = logging.getLogger("progress.connected_components")
-        visited: set[int] = set()
-        components: List[List[int]] = []
-        last_len = 0
-        last_msg_len = 0
-
-        def _update_progress(cur: int, total: int) -> None:
-            pct = 0.0 if total == 0 else round(cur / total * 100, 2)
-            msg = "."*11+f"进度: {cur}/{total} ({pct}%)"+ "\r"
-            # inline refresh without newline, emulate tqdm leave=False
-            # 原地刷新不换行，模拟 tqdm 的 leave=False 行为
-            sys.stdout.write(msg)
-            sys.stdout.flush()
-            # carriage return to start, overwrite with spaces, and return
-            if cur == total:
-                sys.stdout.write("\r" + (" " * len(msg)) + "\r")
-                sys.stdout.flush()
-            # record for final clear
-            nonlocal last_msg_len
-            last_msg_len = len(msg)
-
-        for tri_id in sorted(graph.keys()):
-            if tri_id in visited:
-                continue
-            component: List[int] = []
-            component: List[int] = []
-            q = deque([tri_id])
-            while q:
-                current = q.popleft()
-                if current in visited:
-                    continue
-                visited.add(current)
-                cur_len = len(visited)
-                if cur_len > last_len:
-                    _update_progress(cur_len, total_nodes)
-                    last_len = cur_len
-                component.append(current)
-                for nb in graph.get(current, []):
-                    if nb not in visited:
-                        q.append(nb)
-            components.append(component)
-        # final clear (tqdm leave=False semantics)
-        if last_msg_len > 0:
-            sys.stdout.write(" " * last_msg_len + "\r")
-            sys.stdout.flush()
-        return components
-    def ensure_bvh(self):
-        """
-        Ensure the BVH is built and object is sorted.
-        If already sorted and BVH exists, this method returns immediately.
-        
-        Args:
-            geom_triangles_AABB: Global triangle AABBs from Geom. 
-                               If None, BVH cannot be built.
-        """
-        triangles=self.vertices[self.tri_id2vert_id]
-        self.bvh = build_bvh(triangles)
-        pass
-    def repair_degenerate_triangles(self,isoperimetric_ratio_threshold:int=1000,scale=10**GEOM_ACC):
-        
-        """
-        Repair degenerate triangles by removing them from the mesh.
-        Degenerate triangles are those with area close to zero or isoperimetric ratio close to zero.
-        """
-        pass
+ 
 
 import numpy as np
 # 确保Object类已导入，triangle_normal_vector函数可正常调用
@@ -348,107 +54,6 @@ import numpy as np
 from .bvh import AABB
 scale = int(10 ** GEOM_ACC)                 # 坐标放大倍数
 min_edge_mm = 0.5 * (10 ** (-PROCESS_ACC))  # 例如 PROCESS_ACC=2 -> 0.005mm
-from .static_class import QualityGrade
-class Triangle:
-    user_min_edge = min_edge_mm * scale         # -> 50
-    # ========== 第一部分：无默认值的必选属性（必须在前）==========
-    vertices: np.ndarray          # 三角形顶点坐标 (3,3) - 必选，实例化时初始化
-    vertex_ids: np.ndarray        # 三角形顶点ID (3,) - 必选，实例化时初始化
-    normal: np.ndarray            # 三角形法向量 (3,) - 必选，process_edge_area_ESB中计算
-    triangle_id: int              # 三角形唯一ID - 必选，实例化时传入
-    min_edge: float               # 三角形最小边长 - 必选，process_edge_area_ESB中计算
-    # ========== 第二部分：有默认值的可选属性（必须在后）==========
-    edges: np.ndarray = None      # 三角形边向量 (3,3) - 可选，预留/后续赋值
-    topology: Optional[Dict] = field(default_factory=dict)  # 顶点拓扑并集 - 可选，build_topology中赋值
-    area: float = None              # 三角形面积 - 可选，process_edge_area_ESB中计算
-    aabb: AABB = None  # 三角形AABB - 可选，process_edge_area_ESB中计算
-    perimeter: float = None  # 三角形周长 - 可选，process_edge_area_ESB中计算
-    parametric_area_grade: QualityGrade = None  # 三角形等比系数等级 - 可选，process_edge_area_ESB中计算
-    errorESB_grade: QualityGrade = None  # 三角形ESB误差系数等级 - 可选，process_edge_area_ESB中计算
-    AhatESB_grade: QualityGrade = None  # 三角形ESB误差面积系数等级 - 可选，process_edge_area_ESB中计算
-    def __init__(self, obj: Object, triangle_id: int):
-        """实例化三角形，初始化基础必选属性"""
-        self.vertices = obj.vertices[obj.tri_id2vert_id[triangle_id]]
-        from .bvh import triangle_aabb_from_coords
-        self.aabb=triangle_aabb_from_coords(self.vertices)
-        self.vertex_ids = obj.tri_id2vert_id[triangle_id]
-        self.triangle_id = triangle_id
-        # 初始化后处理：计算法向量、最小边长、边向量
-        self.process_edge_area_ESB()
-        # 构建拓扑关系：计算顶点两两三角面ID并集
-        self.build_topology(obj)  
-
-    def process_edge_area_ESB(self):
-        from .static_class import QualityGrade
-        from .intersection import triangle_normal_vector
-        self.normal = triangle_normal_vector(self.vertices)
-
-        diff_array = self.vertices - np.array([self.vertices[-1], self.vertices[0], self.vertices[1]])
-        self.edges = diff_array
-
-        edge_lengths = np.linalg.norm(diff_array.astype(np.float64), axis=1)
-        self.min_edge = float(np.min(edge_lengths))
-        self.perimeter = float(np.sum(edge_lengths))
-
-        # area：避免 int64 cross 溢出
-        c = np.cross(self.edges[0].astype(np.float64), self.edges[1].astype(np.float64))
-        area = 0.5 * float(np.linalg.norm(c))
-        self.area = area
-
-        parametric_area_ratio = float('inf') if area <= 0 else (self.perimeter**2) / (np.pi * area)
-        self.parametric_area_grade = QualityGrade.classify(parametric_area_ratio, criteria=[12, 50, 400, 1000])
-
-
-        # ESB
-        L = float(self.aabb.diag)  # 确认与 vertices 同单位（放大域）
-        errorESB = max(float(Triangle.user_min_edge), L * 1e-10)
-        errorESB_ratio = float('inf') if self.min_edge <= 0 else (errorESB / self.min_edge)
-        self.errorESB_grade = QualityGrade.classify(errorESB_ratio, criteria=[0.1, 1, 2, 10])
-
-        AhatESB = 0.5 * float(np.max(edge_lengths)) * errorESB
-        AhatESB_ratio = float('inf') if self.area <= 0 else (AhatESB / self.area)
-        self.AhatESB_grade = QualityGrade.classify(AhatESB_ratio, criteria=[0.1, 1, 2, 10])
-
-    def build_topology(self, obj: Object):
-        """构建三角形拓扑关系：计算三个顶点两两对应的三角面ID并集"""
-        # 获取当前三角形三个顶点对应的三角面ID数组
-        tri_id=self.triangle_id
-        vertices=self.vertex_ids
-        v0,v1,v2=vertices
-        tris_0=set(obj.vex_id2tri_ids[v0])-{tri_id}
-        tris_1=set(obj.vex_id2tri_ids[v1])-{tri_id}
-        tris_2=set(obj.vex_id2tri_ids[v2])-{tri_id}
-        edge0_key=(v0,v1) if v0<v1 else (v1,v0)
-        edge0_value=list(tris_0 & tris_1)
-        if len(edge0_value)!=1:
-            raise ValueError(f"Edge {edge0_key} has {len(edge0_value)} triangles, expected 1")
-        else:
-            tris_0.remove(edge0_value[0])
-            tris_1.remove(edge0_value[0])
-        edge0_value=edge0_value[0]
-
-        edge1_key=(v1,v2) if v1<v2 else (v2,v1)
-        edge1_value=list(tris_1 & tris_2)
-        if len(edge1_value)!=1:
-            raise ValueError(f"Edge {edge1_key} has {len(edge1_value)} triangles, expected 1")
-        else:
-            tris_1.remove(edge1_value[0])
-            tris_2.remove(edge1_value[0])
-        edge1_value=edge1_value[0]
-
-
-        edge2_key=(v2,v0) if v2<v0 else (v0,v2)
-        edge2_value=list(tris_0 & tris_2)
-        if len(edge2_value)!=1:
-            raise ValueError(f"Edge {edge2_key} has {len(edge2_value)} triangles, expected 1")
-        else:
-            tris_0.remove(edge2_value[0])
-            tris_2.remove(edge2_value[0])
-        edge2_value=edge2_value[0]
-        edge_map={edge0_key:edge0_value,edge1_key:edge1_value,edge2_key:edge2_value}
-        point_map={v0:tris_0,v1:tris_1,v2:tris_2}
-        topology={"vertices":point_map,"edges":edge_map}
-        self.topology = topology
 
 class Geom:
     def __init__(self,model:"Model",acc=GEOM_ACC,parallel_acc=GEOM_PARALLEL_ACC,vertices_order=VerticesOrder.ZYX,triangles_order=TrianglesOrder.P132) -> None:
@@ -475,7 +80,6 @@ class Geom:
         if self._load_from_cache():
             res,output_dir=self.__build_object_contact_triangles()
             res,output_dir=self.__build_object_contact_patch_level(res,output_dir)
-            
             return
         # Try to load from cache
 
@@ -487,8 +91,7 @@ class Geom:
         res,output_dir=self.__build_object_contact_triangles()
         # 
         # Save to cache
-
-        self.show()
+        # self.show()
     @property
     def hash_id(self) -> str:
         # 延迟计算：仅在首次访问 hash_id 属性时才生成哈希值，避免初始化阶段不必要的计算开销
@@ -725,20 +328,30 @@ class Geom:
                 tri=Triangle(obj,tri_id)
                 obj.triangles.append(tri)
                 # pass
+
+            # sys.stdout.write(f"\rUpdating...................................repair_degenerate_triangles {i+1}/{objects_len}"+"\r")
+            # sys.stdout.flush()
+            # obj.repair_degenerate_triangles()
             sys.stdout.write(f"\rUpdating...................................building BVH {i+1}/{objects_len}"+"\r")
             sys.stdout.flush()
             obj.graph=obj.graph_build()
             obj.components=obj.connected_components()
             obj.ensure_bvh()
-            obj.aabb=obj.bvh.aabb
+            if obj.bvh:
+                obj.aabb=obj.bvh.aabb
         
         if self.objects:
             objs = list(self.objects.values())
-            aabb = objs[0].bvh.aabb
-            for obj in objs[1:]:
-                aabb_current = obj.bvh.aabb
-                aabb = aabb.merge(aabb_current)
-            self.AABB = aabb
+            # Filter objects with valid BVH
+            valid_objs = [o for o in objs if o.bvh]
+            if valid_objs:
+                aabb = valid_objs[0].bvh.aabb
+                for obj in valid_objs[1:]:
+                    aabb_current = obj.bvh.aabb
+                    aabb = aabb.merge(aabb_current)
+                self.AABB = aabb
+            else:
+                self.AABB = None
             
         self.status = Status.SORTED
         
@@ -750,8 +363,10 @@ class Geom:
             parallel_acc=self.parallel_acc
             parellel_espsilon=np.sin(np.deg2rad(parallel_acc))
         for i, obj1 in enumerate(objs):
+            if obj1.aabb is None: continue
             for j in range(i + 1, len(objs)):
                 obj2 = objs[j]
+                if obj2.aabb is None: continue
                 if obj1.aabb.overlap(obj2.aabb): 
                     pair=(obj1.id,obj2.id)if obj1.id<obj2.id else (obj2.id,obj1.id)
                     sys.stdout.write(f"\r"+"."*35+f"obj_pair:{pair}"+"\r")
@@ -943,7 +558,7 @@ class Geom:
                 # -------------------------
                 # cover1/cover2：你定义的“tri1 被 tri2 覆盖比例 / tri2 被 tri1 覆盖比例”
                 # intersection_area：交叠面积（或投影交叠面积等）
-                if tri1.isoperimetric_ratio>1000 or tri2.isoperimetric_ratio>1000:
+                if tri1.parametric_area_grade==QualityGrade.CRITICAL and tri2.parametric_area_grade==QualityGrade.CRITICAL:
                     cover1=0
                     cover2=0
                     intersection_area=0
@@ -1037,8 +652,8 @@ class Geom:
             file_path = os.path.join(output_dir, file_name)
             df=pd.read_feather(file_path)
             from .patch_level import Patch
-            patch=Patch(obj1,obj2,df)
-            patch_level_result[(obj1.id, obj2.id)] = {"patch": patch}
+            patch=Patch(obj1,obj2,df,show="true")
+            patch_level_result[(obj1.id, obj2.id)  ] = {"patch": patch}
 
             
         return patch_level_result,output_dir

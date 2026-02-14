@@ -1,9 +1,9 @@
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 from collections import deque
 import pandas as pd
 from tqdm import tqdm
 import numpy as np
+from dataclasses import dataclass
 def build_patch_graph(obj,tri_ids,df,tri_col):
             """
             构建单对象的“面片邻接统计图”并返回字典形式的图结构。
@@ -56,8 +56,8 @@ def build_patch_graph(obj,tri_ids,df,tri_col):
             for tri_id in tqdm(tri_ids,desc="build_patch_graph_deg",total=len(tri_ids),leave=False):
                 df_tri = df[df[tri_col] == tri_id]
 
-                df_true  = df_tri[df_tri['area_pass'] == True]
-                df_false = df_tri[df_tri['area_pass'] == False]
+                df_true  = df_tri[df_tri['area_pass']]
+                df_false = df_tri[~df_tri['area_pass']]
                 adj_tri_ids_in_df_true = list(set(df_true[adj_tri_col]))
                 cover_true  = {"area_ratio": df_true[cover_col].sum(),
                             "area_acc": df_true['intersection_area'].sum(),
@@ -104,25 +104,136 @@ def build_patch_graph(obj,tri_ids,df,tri_col):
                 elem["ddeg"] = float(np.max(dds)) if dds else None
             return g
         
+def _stable_unique(seq: Any) -> List[int]:
+    out: List[int] = []
+    seen: set[int] = set()
+    for x in seq:
+        try:
+            xi = int(x)
+        except Exception:
+            continue
+        if xi not in seen:
+            seen.add(xi)
+            out.append(xi)
+    return out
+
+
+def create_summary(df: pd.DataFrame, group_field: str, cover_field: str, tri_field: str, obj: Any) -> pd.DataFrame:
+    summary_df = (
+        df[df["area_pass"]]
+        .groupby(group_field)
+        .agg(
+            cover_sum=(cover_field, "sum"),
+            adj_obj_list=(tri_field, lambda x: _stable_unique(x)),
+        )
+        .reset_index()
+    )
+    summary_df_sorted = summary_df.sort_values(by="cover_sum", ascending=True).reset_index(drop=True)
+    tri_list = list(summary_df_sorted[group_field])
+    parametric_area_grade_list = [
+        tri.parametric_area_grade for tri in obj.get_triangles_by_list(tri_list)
+    ]
+    summary_df_sorted["parametric_area_grade"] = parametric_area_grade_list
+    first_col_name = summary_df_sorted.columns.tolist()[0]
+    summary_df_sorted_renamed = summary_df_sorted.rename(columns={first_col_name: "tri_id"})
+    summary_df_sorted_renamed = summary_df_sorted_renamed[
+        ["tri_id", "cover_sum", "adj_obj_list", "parametric_area_grade"]
+    ]
+    return summary_df_sorted_renamed
+
+
+def get_dynamic_threshold(parametric_area_grade: int) -> float:
+    if parametric_area_grade == 4:
+        return 0.10
+    elif parametric_area_grade == 3:
+        return 0.03
+    elif parametric_area_grade == 2:
+        return 0.01
+    else:
+        return 0.01
+
+
+def _build_adj_eval(adj_list: Any, other_map: Dict[int, bool]) -> Dict[int, Any]:
+    if adj_list is None or (isinstance(adj_list, float) and np.isnan(adj_list)):
+        return {}
+    if not isinstance(adj_list, (list, tuple, set)):
+        return {}
+    out: Dict[int, Any] = {}
+    for t in adj_list:
+        try:
+            tid = int(t)
+        except Exception:
+            continue
+        out[tid] = other_map.get(tid, None)
+    return out
+
+
+def validate_patch_with_dynamic_threshold(
+    df1: pd.DataFrame,
+    df2: pd.DataFrame,
+    threshold_fn: Any,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    required = {"tri_id", "cover_sum", "adj_obj_list", "parametric_area_grade"}
+    missing1 = required - set(df1.columns)
+    missing2 = required - set(df2.columns)
+    if missing1:
+        raise ValueError(f"df1 missing columns: {missing1}")
+    if missing2:
+        raise ValueError(f"df2 missing columns: {missing2}")
+
+    df1_out = df1.copy()
+    df2_out = df2.copy()
+    df1_out["threshold"] = df1_out["parametric_area_grade"].apply(threshold_fn)
+    df2_out["threshold"] = df2_out["parametric_area_grade"].apply(threshold_fn)
+    df1_out["main_evaluation"] = df1_out["cover_sum"] > df1_out["threshold"]
+    df2_out["main_evaluation"] = df2_out["cover_sum"] > df2_out["threshold"]
+    df1_eval_map: Dict[int, bool] = dict(
+        zip(df1_out["tri_id"].astype(int), df1_out["main_evaluation"].astype(bool))
+    )
+    df2_eval_map: Dict[int, bool] = dict(
+        zip(df2_out["tri_id"].astype(int), df2_out["main_evaluation"].astype(bool))
+    )
+    df1_out["adj_obj_tri_evaluation"] = df1_out["adj_obj_list"].apply(lambda adj: _build_adj_eval(adj, df2_eval_map))
+    df2_out["adj_obj_tri_evaluation"] = df2_out["adj_obj_list"].apply(lambda adj: _build_adj_eval(adj, df1_eval_map))
+    df1_out["final_evaluation"] = df1_out.apply(
+        lambda row: bool(row["main_evaluation"]) or any(v is True for v in dict(row["adj_obj_tri_evaluation"]).values()),
+        axis=1,
+    )
+    df2_out["final_evaluation"] = df2_out.apply(
+        lambda row: bool(row["main_evaluation"]) or any(v is True for v in dict(row["adj_obj_tri_evaluation"]).values()),
+        axis=1,
+    )
+    return df1_out, df2_out
+
 @dataclass
 class Patch:
     df: pd.DataFrame
     obj_pair: Tuple[int, int]
-    _raw_g_pair: List[Dict]
-    patch: List[List[int]]
+    _raw_g_pair: Dict[int, Dict[int, List[int]]]
+    patch: Dict[int, List[Dict[str, Any]]]
 
-    def __init__(self, obj1, obj2, df):
-        self.df=df
-        df_true = df[df['area_pass'] == True]
-        tri1=list(set(df_true['tri1']))
-        tri2=list(set(df_true['tri2']))
+    def __init__(self, obj1: Any, obj2: Any, df: pd.DataFrame, show: str = "false"):
+        self.df = df
+        df_true = df[df["area_pass"]]
+        self.obj_pair = (obj1.id, obj2.id)
+        if df_true.empty:
+            self._raw_g_pair = {obj1.id: {}, obj2.id: {}}
+            self.patch = {obj1.id: [], obj2.id: []}
+            return
+        s1 = create_summary(df_true, "tri1", "cover1", "tri2", obj1)
+        s2 = create_summary(df_true, "tri2", "cover2", "tri1", obj2)
+        s1e, s2e = validate_patch_with_dynamic_threshold(s1, s2, get_dynamic_threshold)
+        tri1 = list(s1e[s1e["final_evaluation"]]["tri_id"])
+        tri2 = list(s2e[s2e["final_evaluation"]]["tri_id"])
         g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1")
         g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
-        self.obj_pair = (obj1.id, obj2.id)
         self._raw_g_pair = {obj1.id: g1, obj2.id: g2}
         self.patch = {obj1.id: [], obj2.id: []}
         self.component_detect(g1, g2)
-        self.split_patch_with_norm_deg_ddeg(obj1,obj2)
+        if show == "true":
+            self._debug_show(obj1, obj2)
+
+    # removed legacy __init__ and nested helpers
 
     @staticmethod
     def bfs_search_patch(graph_raw_data: Dict[int, List[int]]) -> List[List[int]]:
@@ -166,13 +277,13 @@ class Patch:
                         if adj_g1 in component_g1['component']:
                             status=True
                             break
-                    if status==True:
+                    if status:
                         component_g1['adj'].append(id_g2)
                         component_g2['adj'].append(id_g1)
                         break
-        obj1_id,obj2_id=self.obj_pair
-        self.patch={obj1_id: g1_res, obj2_id: g2_res}
-        pass
+        obj1_id, obj2_id = self.obj_pair
+        self.patch = {obj1_id: g1_res, obj2_id: g2_res}
+
     
     def split_patch_with_norm_deg_ddeg(self,obj1,obj2):
         def turn_g_to_df(g):
@@ -211,13 +322,29 @@ class Patch:
         for obj1_component in self.patch[obj1.id]:
             if boundry_tri1==set():
                 continue
-            obj1_component_set=set(obj1_component['component'])
-            diff_obj1_component_set=obj1_component_set-boundry_tri1
             pass
 
         # obj1_component_set=set(self.patch[obj1.id][0]['component'])
         # g2=self._raw_g_pair[obj2.id]
         # df_obj2=turn_g_to_df(g2)
         pass
+
+    def _debug_show(self,obj1,obj2) -> None:
+        try:
+            from ..visualizer.visualizer_interface import IVisualizer
+        except Exception:
+            return
+        visualizer = IVisualizer.create()
+        g1_res = self.patch[obj1.id]
+        g2_res = self.patch[obj2.id]
+        visualizer.addObj(obj1, opacity=0.1)
+        visualizer.addObj(obj2, opacity=0.1)
+        for component_g1 in g1_res:
+            tris1 = component_g1["component"]
+            visualizer.addObj(obj1, tris1)
+        for component_g2 in g2_res:
+            tris2 = component_g2["component"]
+            visualizer.addObj(obj2, tris2)
+        visualizer.show()
         
         
