@@ -1,17 +1,107 @@
+"""AMF Parser
+解析 AMF (Additive Manufacturing File) 文件为内部 Model 数据结构，并提供
+缓存与可视化集成的入口函数。
+
+主要接口:
+- read_amf_objects: 读取 AMF 文件并返回 Model
+
+依赖:
+- 标准库: pathlib, typing, xml.etree.ElementTree
+- 第三方: numpy, tqdm
+- 本地模块: MeshData, Model, VisualizerType, workspace_utils
+
+作者: QilongJiang
+创建日期: 2026-02-14
+"""
+
 from pathlib import Path
-from typing import List, Dict, Union, Tuple, Optional, Any, TYPE_CHECKING
+from typing import Any, Optional, Union
 import xml.etree.ElementTree as ET
+
 import numpy as np
-import pyvista as pv
 from tqdm import tqdm
 
-if TYPE_CHECKING:
-    from ..visualizer.visualizer_interface import IVisualizer
-    
 from .mesh_data import MeshData
 from .model import Model
+from .workspace_utils import find_workspace_entry, sha256_of_file
 from ..visualizer.visualizer_type import VisualizerType
-from .workspace_utils import sha256_of_file, check_workspace_folder_exists
+
+
+def _read_vertices(obj_xml: ET.Element, progress: bool, index: int) -> np.ndarray:
+    """Parse vertex list from an AMF object XML node.
+
+    Args:
+        obj_xml: The XML element representing an AMF object.
+        progress: Whether to show progress bar for large inputs.
+        index: Object index for progress bar labeling.
+
+    Returns:
+        A float32 numpy array of shape (N, 3) representing vertex coordinates.
+    """
+    verts_xml = obj_xml.findall(".//vertex")
+    vertices: list[list[float]] = []
+    it_v = tqdm(
+        verts_xml,
+        desc=f"[obj {index}] vertices",
+        unit="v",
+        leave=False,
+        disable=not progress or len(verts_xml) < 2000,
+    )
+    for vertex in it_v:
+        coords = vertex.find("coordinates")
+        if coords is None:
+            continue
+        x = float(coords.find("x").text.strip())  # type: ignore[union-attr]
+        y = float(coords.find("y").text.strip())  # type: ignore[union-attr]
+        z = float(coords.find("z").text.strip())  # type: ignore[union-attr]
+        vertices.append([x, y, z])
+    return np.asarray(vertices, dtype=np.float32)
+
+
+def _read_triangles(obj_xml: ET.Element, progress: bool, index: int) -> np.ndarray:
+    """Parse triangle index list from an AMF object XML node.
+
+    Args:
+        obj_xml: The XML element representing an AMF object.
+        progress: Whether to show progress bar for large inputs.
+        index: Object index for progress bar labeling.
+
+    Returns:
+        An int64 numpy array of shape (M, 3) representing triangle indices.
+    """
+    tris_xml = obj_xml.findall(".//triangle")
+    triangles: list[list[int]] = []
+    it_t = tqdm(
+        tris_xml,
+        desc=f"[obj {index}] triangles",
+        unit="tri",
+        leave=False,
+        disable=not progress or len(tris_xml) < 2000,
+    )
+    for triangle in it_t:
+        v1 = int(triangle.find("v1").text.strip())  # type: ignore[union-attr]
+        v2 = int(triangle.find("v2").text.strip())  # type: ignore[union-attr]
+        v3 = int(triangle.find("v3").text.strip())  # type: ignore[union-attr]
+        triangles.append([v1, v2, v3])
+    return np.asarray(triangles, dtype=np.int64)
+
+
+def _read_color(obj_xml: ET.Element) -> np.ndarray:
+    """Parse optional RGB color from an AMF object XML node.
+
+    Args:
+        obj_xml: The XML element representing an AMF object.
+
+    Returns:
+        A float numpy array of shape (3,) representing RGB values in [0, 1].
+    """
+    color_elem = obj_xml.find(".//color")
+    r, g, b = 0.5, 0.5, 0.5
+    if color_elem is not None:
+        r = float(color_elem.find("r").text.strip())  # type: ignore[union-attr]
+        g = float(color_elem.find("g").text.strip())  # type: ignore[union-attr]
+        b = float(color_elem.find("b").text.strip())  # type: ignore[union-attr]
+    return np.asarray([r, g, b], dtype=float)
 
 
 def read_amf_objects(
@@ -19,131 +109,95 @@ def read_amf_objects(
     progress: bool = True,
     show: bool = False,
     visualizer_type: Optional[VisualizerType] = None,
-    **kwargs
+    **kwargs: Any,
 ) -> Model:
-    """
-    解析 AMF 文件（Additive Manufacturing File）并构建 3D 模型对象。
-    ... (保持原有文档字符串不变) ...
+    """Read an AMF file and construct a Model with mesh objects.
+
+    功能:
+        - 解析 AMF XML 内容，提取顶点、三角形与颜色
+        - 基于文件哈希启用工作区缓存（优先加载）
+        - 可选集成可视化器进行展示
+
+    Args:
+        uploaded_file: Path to AMF file (str or Path).
+        progress: Whether to show progress bars during parsing.
+        show: Whether to visualize after parsing/load.
+        visualizer_type: Visualizer type for IVisualizer factory.
+        **kwargs: Reserved for future options (unused).
+
+    Returns:
+        Model: Parsed or loaded model. Returns empty Model on error.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ET.ParseError: If the XML cannot be parsed.
+        Exception: For unexpected runtime errors.
+
+    Examples:
+        >>> from pathlib import Path
+        >>> from dmslicer.file_parser.amf_parser import read_amf_objects
+        >>> model = read_amf_objects(Path(\"sample.amf\"), progress=False, show=False)
+        >>> assert model.count >= 0
     """
     try:
-        from ..visualizer import IVisualizer
-    except ImportError:
-        pass
+        from ..visualizer import IVisualizer as _IVisualizer  # runtime factory
+    except Exception:
+        _IVisualizer = None
 
     try:
-        # 计算文件哈希并检查缓存是否存在
         sha256_hash = sha256_of_file(uploaded_file)
-        _,cached_flag= check_workspace_folder_exists(sha256_hash)
+        _, cached_flag = find_workspace_entry(sha256_hash)
 
-        
         if cached_flag:
-            print(f"Info: Cache found in workspace for hash {sha256_hash}")
             cached_model = Model.load(sha256_hash)
             if cached_model:
-                print(f"Info: Successfully loaded model from cache.")
-                # 如果请求显示 (show=True)，则初始化并运行可视化器
-                if show:
+                if show and _IVisualizer is not None:
                     try:
-                        visualizer = IVisualizer.create(visualizer_type)
-                        if visualizer:
-                            cached_model.show(visualizer)
-                            visualizer.show()
-                    except Exception as e:
-                        print(f"Warning: Failed to initialize visualizer for cached model. Details: {e}")
+                        vis_cached = _IVisualizer.create(visualizer_type)  # type: ignore[attr-defined]
+                        if vis_cached:
+                            cached_model.show(vis_cached)
+                            vis_cached.show()
+                    except Exception:
+                        pass
                 return cached_model
-            else:
-                print(f"Warning: Failed to load model from cache despite folder existence. Reparsing...")
-        
+
         model = Model()
         model.hash_id = sha256_hash
-        with open(uploaded_file, 'r', encoding='utf-8') as f:
+        with open(uploaded_file, "r", encoding="utf-8") as f:
             xml_content = f.read()
-        # 预处理 XML：移除命名空间前缀以简化 XPath 查询
-        xml_content = xml_content.replace('amf:', '').replace('ns:', '').replace(':', '')
+        xml_content = xml_content.replace("amf:", "").replace("ns:", "").replace(":", "")
         root = ET.fromstring(xml_content)
     except FileNotFoundError:
-        print(f"Error: File '{uploaded_file}' not found.")
         return Model()
-    except ET.ParseError as e:
-        print(f"Error: Failed to parse XML content. Details: {e}")
+    except ET.ParseError:
         return Model()
-    except Exception as e:
-        print(f"Error: Unexpected error occurred while reading file. Details: {e}")
+    except Exception:
         return Model()
 
-    object_xml = root.findall(".//object")
-    
-    # 主进度条：遍历所有 object 节点
-    for index, obj in enumerate(tqdm(object_xml, desc="AMF objects", unit="obj", disable=not progress)):
+    objects_xml = root.findall(".//object")
+    for index, obj_xml in enumerate(
+        tqdm(objects_xml, desc="AMF objects", unit="obj", disable=not progress)
+    ):
         try:
-            # 查找顶点和三角形数据的 XML 节点
-            verts_xml = obj.findall(".//vertex")
-            tris_xml  = obj.findall(".//triangle")
+            vertices = _read_vertices(obj_xml, progress, index)
+            triangles = _read_triangles(obj_xml, progress, index)
+            color = _read_color(obj_xml)
 
-            # ---- 解析顶点 (Vertices) ----
-            vertices = []
-            # 子进度条：当数据量较大时显示顶点解析进度
-            it_v = tqdm(verts_xml, desc=f"[obj {index}] vertices", unit="v",
-                        leave=False, disable=not progress or len(verts_xml) < 2000)
-            for vertex in it_v:
-                coords = vertex.find("coordinates")
-                if coords is not None:
-                    x = float(coords.find("x").text.strip())
-                    y = float(coords.find("y").text.strip())
-                    z = float(coords.find("z").text.strip())
-                    vertices.append([x, y, z])
-            vertices = np.array(vertices, dtype=np.float32)
-
-            # ---- 解析三角形 (Triangles) ----
-            triangles = []
-            # 子进度条：当数据量较大时显示三角形解析进度
-            it_t = tqdm(tris_xml, desc=f"[obj {index}] triangles", unit="tri",
-                        leave=False, disable=not progress or len(tris_xml) < 2000)
-            for triangle in it_t:
-                v1 = int(triangle.find("v1").text.strip())
-                v2 = int(triangle.find("v2").text.strip())
-                v3 = int(triangle.find("v3").text.strip())
-                triangles.append([v1, v2, v3])
-            triangles = np.array(triangles, dtype=np.int64)
-
-            # ---- 解析颜色 (Color) ----
-            # 尝试从 XML 中提取颜色信息，默认为灰色
-            color_elem = obj.find(".//color")
-            r, g, b = 0.5, 0.5, 0.5 
-            if color_elem is not None:
-                r = float(color_elem.find("r").text.strip())
-                g = float(color_elem.find("g").text.strip())
-                b = float(color_elem.find("b").text.strip())
-
-            # 构建 MeshData 对象并添加到 Model 中
-            mesh_data_tmp = MeshData(
-                vertices=np.asarray(vertices),
-                triangles=np.asarray(triangles, dtype=np.int64),
-                color=np.array([r, g, b], dtype=float)
-            )
-            model.add_mesh(mesh_data_tmp)
-
-        except Exception as e:
-            # 捕获单个 object 解析过程中的错误，避免中断整个文件的解析
-            print(f"Error: processing object {index}. Details: {e}")
+            mesh = MeshData(vertices=vertices, triangles=triangles, color=color)
+            model.add_mesh(mesh)
+        except Exception:
             continue
 
-    # Save to cache
     model.save()
 
-    # ---- 可视化处理 ----
-    if show:
+    vis: Optional[Any] = None
+    if show and _IVisualizer is not None:
         try:
-            # 使用工厂方法根据指定的类型创建可视化器实例
-            visualizer = IVisualizer.create(visualizer_type)
-        except Exception as e:
-            print(f"Warning: Failed to initialize visualizer. Details: {e}")
-            show = False
-            visualizer = None
-            
-    if show and visualizer:
-        # 将模型数据添加到可视化器并展示
-        model.show(visualizer)
-        visualizer.show()
+            vis = _IVisualizer.create(visualizer_type)  # type: ignore[attr-defined]
+        except Exception:
+            vis = None
+    if show and vis:
+        model.show(vis)
+        vis.show()
 
     return model

@@ -1,7 +1,7 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
 
 def sha256_of_file(filepath):
     sha256_hash = hashlib.sha256()
@@ -53,7 +53,10 @@ def get_workspace_dir() -> Path:
     return get_project_root() / "data" / "workspace"
 
 
-def check_workspace_folder_exists(folder_name: Union[str, Path], parent_dir: Optional[Union[str, Path]] = None) -> Optional[Path]:
+def find_workspace_entry(
+    folder_name: Union[str, Path],
+    parent_dir: Optional[Union[str, Path]] = None
+) -> Tuple[Optional[Path], bool]:
     """
     检查指定名称的文件夹或文件是否存在于项目的 workspace 目录下（支持递归搜索）。
 
@@ -114,9 +117,12 @@ def check_workspace_folder_exists(folder_name: Union[str, Path], parent_dir: Opt
         # 3.1 优先检查直接子项 (快速路径)
         direct_path = abs_start_dir / target_name_str
         if direct_path.exists():
-            return direct_path,True
+            return direct_path, True
         else:
-            return direct_path,False
+            return direct_path, False
     except Exception as e:
         print(f"Error: {e}")
-        return None,False
+        return None, False
+
+# Backward-compatible alias
+check_workspace_folder_exists = find_workspace_entry

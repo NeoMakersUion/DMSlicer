@@ -39,7 +39,7 @@ file_parser/
 ├── amf_parser.py      # AMF 文件解析器
 ├── mesh_data.py       # 单个三角网格的数据结构
 ├── model.py           # 多 Mesh 的场景容器
-├── parser.py          # 统一解析入口（按文件后缀分发）
+├── file_dispatcher.py # 统一解析入口（按文件后缀分发，导出 parse_file）
 └── README.md
 ```
 
@@ -196,6 +196,14 @@ classDiagram
 from dmslicer.file_parser import read_amf_objects
 
 model = read_amf_objects("example.amf", show=True)
+
+#### `parse_file(path, **kwargs) → Model`
+
+```python
+from dmslicer.file_parser import parse_file
+
+model = parse_file("example.amf", progress=False, show=False)
+```
 ```
 
 功能：

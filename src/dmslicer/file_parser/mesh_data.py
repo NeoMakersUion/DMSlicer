@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass, field
 import numpy as np
-from typing import Tuple, Union, Optional, List, ClassVar
+from typing import Tuple, ClassVar
 
 @dataclass
 class MeshData:

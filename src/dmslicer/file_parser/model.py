@@ -1,7 +1,6 @@
 import pickle
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional, Union, ClassVar, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 from .mesh_data import MeshData
 from .workspace_utils import get_workspace_dir
 if TYPE_CHECKING:
@@ -129,7 +128,7 @@ class Model:
                 print(f"Warning: Loaded model hash_id ({model.hash_id}) does not match requested ({hash_id})")
                 model.hash_id = hash_id # Auto-correct?
 
-            print(f"Info: Model loaded Successfully!")
+            print("Info: Model loaded Successfully!")
             return model
         except Exception as e:
             print(f"Error: Failed to load model: {e}")
