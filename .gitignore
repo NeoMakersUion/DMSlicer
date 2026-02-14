@@ -88,3 +88,6 @@ tmp.bat
 # 临时数据
 data/
 screenshots/
+tools/
+.trae/
+
