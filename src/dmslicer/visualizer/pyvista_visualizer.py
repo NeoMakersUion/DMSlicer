@@ -1,3 +1,4 @@
+# pyvista_visualizer.py
 # -*- coding: utf-8 -*-
 try:
     import pyvista as pv
@@ -9,7 +10,7 @@ import os
 from datetime import datetime
 from .visualizer_interface import IVisualizer
 from ..file_parser.mesh_data import MeshData
-from typing import Union,Optional, TYPE_CHECKING
+from typing import Union,Optional, TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..geometry_kernel import Geom, Object
 
@@ -48,7 +49,7 @@ class PyVistaVisualizer(IVisualizer):
 
         triangles=geom.triangles[triangles_ids]
         self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity)
-    def addTriangle(self,triangle:"Triangle",opacity:float=0.5,color=None):
+    def addTriangle(self,triangle: Any,opacity:float=0.5,color=None):
         """
         Add triangle to PyVista plotter.
         """
@@ -69,18 +70,18 @@ class PyVistaVisualizer(IVisualizer):
         triangles_ids=list(range(tri_len))
         if include_triangles_ids is not None:
             if not isinstance(include_triangles_ids,list):
-                raise ValueError(f"include_triangles_ids must be a list of triangle ids.")
+                raise ValueError("include_triangles_ids must be a list of triangle ids.")
             for tri_id in include_triangles_ids:
-                if not tri_id in triangles_ids:
+                if tri_id not in triangles_ids:
                     include_triangles_ids.remove(tri_id)
             triangles_ids=include_triangles_ids
   
         if exclude_triangles_ids is not None:
             if not isinstance(exclude_triangles_ids,list):
-                raise ValueError(f"exclude_triangles_ids must be a list of triangle ids.")
+                raise ValueError("exclude_triangles_ids must be a list of triangle ids.")
             exclude_triangles_ids=sorted(exclude_triangles_ids,reverse=True)
             for tri_id in exclude_triangles_ids:
-                if not tri_id in triangles_ids:
+                if tri_id not in triangles_ids:
                     continue
                 triangles_ids.remove(tri_id)
         triangles=object.tri_id2vert_id[np.array(triangles_ids)]
@@ -204,7 +205,7 @@ class PyVistaVisualizer(IVisualizer):
                 
             elif ext == '.vtkjs':
                 # Interactive 3D (VTKJS) - Not supported in current PyVista, fallback to GLTF
-                print(f"Warning: .vtkjs export is not supported by this PyVista version. Falling back to .gltf.")
+                print("Warning: .vtkjs export is not supported by this PyVista version. Falling back to .gltf.")
                 new_path = os.path.splitext(file_path)[0] + ".gltf"
                 self.plotter.export_gltf(new_path, **kwargs)
                 print(f"Saved Interactive 3D (GLTF) to: {new_path}")
@@ -359,7 +360,20 @@ def visualize_local_tris(
     Visualize vertices and triangles using PyVista.
     """
     if colors is None:
-        colors=[color for color in pv.plotting.BUILTIN_COLORS]
-    for vertices,triangles,color in zip(vertices_list,triangles_list,colors):
-        visualize_vertices_and_triangles(vertices,triangles,plotter=plotter,color=color,show_edges=show_edges,edge_color=edge_color,opacity=opacity,smooth_shading=smooth_shading)
-    visualize_vertices_and_triangles(vertices_sorted_by_zyx,triangles_sorted_by_t123_vzyz[local_tris[0]],color=colors[0])
+        colors = [c for c in pv.plotting.BUILTIN_COLORS]
+    # 逐个可视化选定的局部三角形
+    for i, tri_id in enumerate(local_tris):
+        tri = triangles_sorted_by_t123_vzyz[tri_id]
+        triangles = np.array([tri])
+        c = colors[i % len(colors)] if len(colors) > 0 else "#66b3ff"
+        plotter = visualize_vertices_and_triangles(
+            vertices_sorted_by_zyx,
+            triangles,
+            plotter=plotter,
+            color=c,
+            show_edges=show_edges,
+            edge_color=edge_color,
+            opacity=opacity,
+            smooth_shading=smooth_shading
+        )
+    return plotter

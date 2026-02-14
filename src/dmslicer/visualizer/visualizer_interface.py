@@ -3,11 +3,11 @@ from abc import ABC, abstractmethod
 import numpy as np
 from .visualizer_type import VisualizerType
 from ..file_parser.mesh_data import MeshData
-from typing import Optional, Union, TYPE_CHECKING
-from .config import DEFAULT_VISUALIZER,AMF_TARGET_REDUCTION,AMF_DECIMATE_MIN_TRIS
+from typing import Optional, Union, TYPE_CHECKING, List, Tuple, Dict, Any
+from .config import DEFAULT_VISUALIZER
 
 if TYPE_CHECKING:
-    from ..geometry_kernel import Object
+    from ..geometry_kernel import Object, Triangle
 else:
     # Runtime placeholder or deferred import could be used if strictly needed,
     # but for Union checks `Object` must be defined.
@@ -30,6 +30,66 @@ class IVisualizer(ABC):
             **kwargs: Arguments passed to the visualizer constructor.
         """
         pass
+
+    @abstractmethod
+    def addObj(
+        self,
+        object: "Object",
+        include_triangles_ids: Optional[List[int]] = None,
+        exclude_triangles_ids: Optional[List[int]] = None,
+        opacity: float = 0.5,
+        color: Optional[Any] = None
+    ):
+        """
+        Add a specific Object to the visualizer, optionally filtering triangles.
+
+        Args:
+            object: The Object instance to visualize.
+            include_triangles_ids: List of triangle IDs to include.
+            exclude_triangles_ids: List of triangle IDs to exclude.
+            opacity: Opacity value (0.0-1.0).
+            color: Color of the object.
+        """
+        pass
+
+    @abstractmethod
+    def addTriangle(
+        self,
+        triangle: "Triangle",
+        opacity: float = 0.5,
+        color: Optional[Any] = None
+    ):
+        """
+        Add a single Triangle to the visualizer.
+
+        Args:
+            triangle: The Triangle instance to visualize.
+            opacity: Opacity value (0.0-1.0).
+            color: Color of the triangle.
+        """
+        pass
+
+    @abstractmethod
+    def addContactTriangles(
+        self,
+        objects: Dict[int, "Object"],
+        obj_pair: Tuple[int, int],
+        tris_ids_pairs: List[Tuple[int, int]],
+        select: Optional[Union[int, List[int]]] = None,
+        opacity: float = 0.5
+    ):
+        """
+        Add contact triangles between two objects to the visualizer.
+
+        Args:
+            objects: Dictionary of all objects.
+            obj_pair: Tuple of (obj1_id, obj2_id).
+            tris_ids_pairs: List of intersecting triangle ID pairs.
+            select: Optional ID(s) to filter which object's contact triangles to show.
+            opacity: Opacity value (0.0-1.0).
+        """
+        pass
+
     @abstractmethod
     def add(
         self,

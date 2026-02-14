@@ -14,7 +14,7 @@ Attributes:
 
 try:
     from ..default_config import DEFAULTS
-except:
+except ImportError:
     # Default configuration values
     # These values can be adjusted without modifying the core parser logic
     CONFIG_VERSION = "sub_1.0.0"
