@@ -21,14 +21,17 @@ __license__ = "MIT"
 from .amf_parser import read_amf_objects
 from .mesh_data import MeshData
 from .model import Model
-from .parser import file_parser
-from .workspace_utils import sha256_of_file, check_workspace_folder_exists
+from .workspace_utils import sha256_of_file, find_workspace_entry, check_workspace_folder_exists
+from .file_dispatcher import parse_file
+file_parser = parse_file
 
 __all__ = [
     "read_amf_objects",
     "MeshData",
     "Model",
+    "parse_file",
     "file_parser",
     "sha256_of_file",
+    "find_workspace_entry",
     "check_workspace_folder_exists"
 ]
