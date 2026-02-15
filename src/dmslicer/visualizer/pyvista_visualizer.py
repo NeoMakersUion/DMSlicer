@@ -86,7 +86,12 @@ class PyVistaVisualizer(IVisualizer):
                 triangles_ids.remove(tri_id)
         triangles=object.tri_id2vert_id[np.array(triangles_ids)]
         self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity)
-
+    def addTri(self,tri:"Tri",opacity:float=0.5,color="red"):
+        """
+        Add triangle to PyVista plotter.
+        """
+        triangle=np.array([[0,1,2]])
+        self.plotter=visualize_vertices_and_triangles(tri.vertices,triangle,plotter=self.plotter,color=color,opacity=opacity)
     def add(
         self,
         obj: Union[MeshData,"Geom", pv.PolyData],
@@ -146,7 +151,38 @@ class PyVistaVisualizer(IVisualizer):
             tri_ids_obj2=[elem[0] for elem in tris_ids_pairs]
             self.addObj(obj2,tri_ids_obj2,opacity=opacity)
     
+    def addAABB(self, aabb: "AABB",color:str="#ff8800",opacity:float=0.1, show_edges=True,edge_color:str="red"):
+        """Add an axis-aligned bounding box (AABB) to the scene.
 
+        This renders the AABB defined by per-axis minima and maxima as a
+        transparent box with edge display enabled. The function expects an
+        AABB instance compatible with geometry_kernel.bvh.AABB where
+        `aabb.min` and `aabb.max` are float64 vectors of shape (3,).
+
+        Args:
+            aabb: The AABB instance to visualize.
+            color: The color of the AABB box. Default is "#ff8800".
+            opacity: The opacity of the AABB box. Default is 0.1.
+            show_edges: Whether to show edges of the AABB box. Default is True.
+            edge_color: The color of the edges of the AABB box. Default is "red".
+
+        Returns:
+            None
+
+        Raises:
+            RuntimeError: If PyVista is not available.
+
+        Note:
+            The rendering uses pv.Box with bounds in VTK order:
+            (xmin, xmax, ymin, ymax, zmin, zmax).
+        """
+        if pv is None:
+            raise RuntimeError("PyVista is not available for AABB visualization.")
+        xmin, ymin, zmin = float(aabb.min[0]), float(aabb.min[1]), float(aabb.min[2])
+        xmax, ymax, zmax = float(aabb.max[0]), float(aabb.max[1]), float(aabb.max[2])
+        box = pv.Box(bounds=(xmin, xmax, ymin, ymax, zmin, zmax))
+        self.plotter.add_mesh(box, color=color, opacity=opacity, show_edges=True, edge_color=edge_color)
+        
     def show(self, **kwargs):
         """
         Show the PyVista plot.

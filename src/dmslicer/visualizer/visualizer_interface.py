@@ -131,6 +131,15 @@ class IVisualizer(ABC):
 
 
 
+    @abstractmethod
+    def addAABB(self, aabb: "AABB"):
+        """
+        Add an AABB to the visualizer.
+
+        Args:
+            aabb: The AABB instance to visualize.
+        """
+        pass
 
     @staticmethod
     def create(visualizer_type: Optional[VisualizerType] = DEFAULT_VISUALIZER, **kwargs) -> "IVisualizer":
@@ -152,3 +161,4 @@ class IVisualizer(ABC):
             return PyVistaVisualizer(**kwargs)
         else:
             raise ValueError(f"Unsupported visualizer type: {visualizer_type}")
+    

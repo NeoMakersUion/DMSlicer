@@ -328,7 +328,6 @@ class Geom:
                 tri=Triangle(obj,tri_id)
                 obj.triangles.append(tri)
                 # pass
-
             # sys.stdout.write(f"\rUpdating...................................repair_degenerate_triangles {i+1}/{objects_len}"+"\r")
             # sys.stdout.flush()
             # obj.repair_degenerate_triangles()
@@ -339,6 +338,7 @@ class Geom:
             obj.ensure_bvh()
             if obj.bvh:
                 obj.aabb=obj.bvh.aabb
+                obj.aabb_dot=obj.bvh_dot.aabb
         
         if self.objects:
             objs = list(self.objects.values())
@@ -367,28 +367,33 @@ class Geom:
             for j in range(i + 1, len(objs)):
                 obj2 = objs[j]
                 if obj2.aabb is None: continue
-                if obj1.aabb.overlap(obj2.aabb): 
+                overlap_flag = obj1.aabb.overlap(obj2.aabb)
+                if overlap_flag: 
                     pair=(obj1.id,obj2.id)if obj1.id<obj2.id else (obj2.id,obj1.id)
-                    sys.stdout.write(f"\r"+"."*35+f"obj_pair:{pair}"+"\r")
+                    sys.stdout.write(f"\r"+"."*35+f"obj_pair:{pair} overlap=True"+"\r")
                     sys.stdout.flush()
                     
                     parellel_espsilon=np.sin(np.deg2rad(10))
                     result=query_obj_bvh(obj1,obj2)
                     if result ==[]:
+                        sys.stdout.write(f"\r"+"."*35+f"obj_pair:{pair} result_len=0"+"\r")
+                        sys.stdout.flush()
                         continue
                     tris_obj_1=[elem[0] for elem in result]
                     tris_obj_2=[elem[1] for elem in result]
                     tris_obj_1_unique=list(set(tris_obj_1))
                     tris_obj_2_unique=list(set(tris_obj_2))
+                    sys.stdout.write(f"\r"+"."*35+f"obj_pair:{pair} result_len={len(result)}"+"\r")
+                    sys.stdout.flush()
                     visualizer = IVisualizer.create()
                     visualizer.addObj(obj1,tris_obj_1_unique)
                     visualizer.addObj(obj2,tris_obj_2_unique)
-                    # visualizer.show()
+                    visualizer.show()
                     obj_adj_bvh_pair[pair]=result
                     obj_adj_graph.setdefault(obj1.id,[]).append(obj2.id)
                     obj_adj_graph.setdefault(obj2.id,[]).append(obj1.id)    
         self.obj_adj_graph=obj_adj_graph
-        self.obj_adj_bvh_pair=obj_adj_bvh_pair
+        self.obj_adj_bvh_pair=obj_adj_bvh_pair 
         
     def __build_object_contact_triangles(self):
         """

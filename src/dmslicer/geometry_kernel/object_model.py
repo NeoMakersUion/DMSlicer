@@ -10,7 +10,8 @@ import pandas as pd
 from .config import GEOM_ACC
 from .bvh import build_bvh, BVHNode, AABB
 
-
+from .transforms import rotate_z_to_vector
+R=rotate_z_to_vector(np.array([1,1,100]))
 @dataclass
 class Object:
     acc: int = GEOM_ACC
@@ -60,7 +61,64 @@ class Object:
         ))
 
     def graph_build(self, include_tri_ids: Optional[List[int]] = None, exclude_tri_ids: Optional[List[int]] = None) -> Dict[int, List[int]]:
+        """Build an undirected triangle adjacency subgraph for this object.
+
+        The method constructs an adjacency list over triangle indices using per‑triangle
+        topology, restricted to a selected subset. A node is a triangle id
+        i ∈ {0, …, N−1}, where N is the number of triangles in this object.
+        An edge (i, j) exists if triangles i and j share an edge according to
+        topology['edges'] (edge‑adjacency; no geometric checks here).
+
+        Data definitions:
+        - Vertex coordinates: local object frame, unit = model length unit (e.g., mm).
+        - Triangles: indices into `self.vertices` via `self.tri_id2vert_id`.
+        - Adjacency: edge‑based neighborhood derived from stored topology.
+          For an adjacency set A(i), j ∈ A(i) iff j is referenced by any edge entry of i.
+        - Output graph: a dict mapping tri_id → sorted, unique neighbor list.
+          Isolated triangles are collected under a reserved key "isolates".
+
+        Why this approach:
+        - Subgraph selection uses include/exclude filters to support downstream
+          connected‑component analysis on candidate submeshes (e.g., contact patches).
+        - A set is used for membership checks, reducing filter cost from O(n) to O(1).
+        - Neighbor lists are sorted to make results deterministic and easier to test.
+
+        Args:
+            include_tri_ids: Optional explicit whitelist of triangle ids to include.
+                Must be convertible to int. Ids outside [0, N) are ignored.
+                If None, all triangles [0, N) are considered.
+            exclude_tri_ids: Optional blacklist of triangle ids to exclude from the
+                final set. Applied after inclusion filtering.
+
+        Returns:
+            A dictionary where each key is a triangle id and the value is a list of
+            adjacent triangle ids (sorted ascending). A special key "isolates" maps
+            to a list of triangle ids with no neighbors in the filtered subgraph.
+
+        Note:
+            - The graph is conceptually undirected, but only the adjacency list for
+              present nodes is emitted. If upstream topology is asymmetric, the
+              neighbor relation may appear one‑sided. Downstream algorithms should
+              symmetrize if necessary.
+            - No geometry (angles, distances) is computed here; this is purely
+              topological adjacency.
+
+        Example:
+            >>> obj = Object(id=1)
+            >>> # obj.triangles[i].topology['edges'] must exist for each i
+            >>> g = obj.graph_build(include_tri_ids=[0, 1, 2])
+            >>> isinstance(g, dict)
+            True
+
+        AI Context:
+            Input: optional include/exclude triangle id lists; relies on
+            `self.triangles[i].topology['edges']` to be pre‑built.
+            Output: adjacency dict with an "isolates" bucket. Pitfalls: if
+            topology is missing or inconsistent, neighbor lists may be empty.
+        """
         tri_count = len(self.triangles)
+        # Filter the working set of triangle ids. Using ints and range checks
+        # prevents invalid indices from entering adjacency construction.
         if include_tri_ids is not None:
             tri_ids = [int(i) for i in include_tri_ids if 0 <= int(i) < tri_count]
         else:
@@ -70,17 +128,21 @@ class Object:
             tri_ids = [i for i in tri_ids if i not in exclude_set]
 
         graph: Dict[int, List[int]] = {}
+        # Set membership is O(1), which is critical when filtering neighbors per node.
         tri_ids_set = set(tri_ids)
 
         for tri_id in tqdm(tri_ids, desc="Building graph", total=len(tri_ids), leave=False):
             try:
+                # Extract edge‑adjacent triangle ids from precomputed topology.
                 adj_vals = self.triangles[tri_id].topology['edges'].values()
                 raw_adj_list = sorted({int(t) for t in adj_vals if int(t) in tri_ids_set})
                 if raw_adj_list:
                     graph[tri_id] = raw_adj_list
                 else:
+                    # AI: ISOLATES_KEY = 'isolates' # reserve isolated triangles for downstream handling
                     graph.setdefault("isolates", []).append(tri_id)
             except Exception:
+                # TODO-20260215-assistant: Replace broad except with topology validation step.
                 continue
         return graph
 
@@ -137,6 +199,7 @@ class Object:
             return
         triangles = self.vertices[self.tri_id2vert_id]
         self.bvh = build_bvh(triangles)
+        self.bvh_dot=build_bvh((R@triangles.T).T)
         pass
 
     def repair_degenerate_triangles(self):
