@@ -12,6 +12,7 @@ from .object_model import Object
 from .part import InterFaceResult, Part
 from .spatial_index import SpatialIndex
 from .topology3d import Topology3D
+from .transforms import rotate_z_to_vector
 
 __all__ = [
     "CONFIG_VERSION",
@@ -34,4 +35,5 @@ __all__ = [
     "intersect_triangle_triangle",
     "intersect_triangle_with_plane",
     "normalize_meshes",
+    "rotate_z_to_vector",
 ]

@@ -39,5 +39,19 @@ class Geom{
 }
 ```
 ### `__init__`初始化
-### 
+###
 
+### transforms.py
+- 提供基础几何变换工具函数。
+- rotate_z_to_vector(v): 返回 3×3 旋转矩阵，使世界 Z 轴旋转到方向 v。
+  - 依赖: numpy
+  - 用法示例:
+    ```python
+    from dmslicer.geometry_kernel import rotate_z_to_vector
+    import numpy as np
+
+    R = rotate_z_to_vector([1.0, 1.0, 1.0])
+    z = np.array([0.0, 0.0, 1.0])
+    u = np.array([1.0, 1.0, 1.0]) / np.linalg.norm([1.0, 1.0, 1.0])
+    assert np.allclose(R @ z, u)
+    ```

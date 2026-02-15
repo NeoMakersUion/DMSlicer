@@ -2,6 +2,10 @@ import numpy as np
 from typing import Optional, Dict, Any
 from dataclasses import field
 from .bvh import AABB, triangle_aabb_from_coords
+class Tri:
+   def __init__(self,vertices):
+       self.vertices=vertices
+       self.aabb=triangle_aabb_from_coords(self.vertices)
 
 class Triangle:
     user_min_edge = 0  # 将在 canonicalize 中通过静态值覆盖或依赖外部设定
