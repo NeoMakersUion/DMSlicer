@@ -207,12 +207,86 @@ def validate_patch_with_dynamic_threshold(
 
 @dataclass
 class Patch:
+    """Compute adjacency-connected patch components between two mesh objects.
+
+    Design Philosophy:
+        The class acts as an orchestrator. It relies on pure helpers
+        (create_summary, get_dynamic_threshold, validate_patch_with_dynamic_threshold)
+        for data shaping and evaluation, and keeps visualization separated
+        in a private method to avoid side effects during construction.
+        This minimizes coupling to upstream pair-level statistics (DataFrame)
+        and downstream Level-of-Detail systems, using a stable dict-based
+        output contract (self.patch, self._raw_g_pair).
+
+    Thread-Safety:
+        Not thread-safe. Instances mutate internal dictionaries during
+        initialization and component linking. No global shared state is used.
+
+    Performance Notes:
+        - Group-by and aggregation: O(N) with overhead proportional to the
+          number of distinct triangle IDs.
+        - Graph build: approximately O(M + E) where M is selected triangles
+          and E is adjacency relations.
+        - BFS components: O(M + E).
+        Space usage is O(M + E) for graphs and component lists. Excessive
+        DataFrame grouping or repeated Python/NumPy transitions may impact
+        performance.
+
+    Examples:
+        Normal path:
+            >>> import pandas as pd
+            >>> class Tri:
+            ...     def __init__(self, i):
+            ...         self.normal = (0.0, 0.0, 1.0)
+            ...         self.topology = {'edges': {0: i+1}}
+            >>> class Obj:
+            ...     def __init__(self, oid, n=3):
+            ...         self.id = oid
+            ...         self.triangles = {i: Tri(i) for i in range(n)}
+            ...     def get_triangles_by_list(self, ids):
+            ...         return [self.triangles[i] for i in ids if i in self.triangles]
+            >>> df = pd.DataFrame({
+            ...     'tri1': [0, 1], 'tri2': [1, 2], 'area_pass': [True, True],
+            ...     'cover1': [0.5, 0.2], 'cover2': [0.3, 0.4], 'intersection_area': [1.0, 2.0]
+            ... })
+            >>> p = Patch(Obj(10), Obj(20), df, show="false")
+            >>> isinstance(p.patch, dict)
+            True
+        Edge case:
+            >>> df_empty = pd.DataFrame({'tri1': [], 'tri2': [], 'area_pass': [], 'cover1': [], 'cover2': [], 'intersection_area': []})
+            >>> p2 = Patch(Obj(1), Obj(2), df_empty, show="false")
+            >>> p2.patch == {1: [], 2: []}
+            True
+    """
     df: pd.DataFrame
     obj_pair: Tuple[int, int]
     _raw_g_pair: Dict[int, Dict[int, List[int]]]
     patch: Dict[int, List[Dict[str, Any]]]
+    sum_df: Dict[int, pd.DataFrame]
+    graph: Dict[int, Dict[int, List[int]]]
 
     def __init__(self, obj1: Any, obj2: Any, df: pd.DataFrame, show: str = "false"):
+        """Initialize the patch computation pipeline.
+
+        Args:
+            obj1: First object, exposing `id`, `triangles`, and
+                `get_triangles_by_list(ids)`; not None.
+            obj2: Second object with the same API contract; not None.
+            df: Pair-level statistics DataFrame containing columns:
+                tri1 (int), tri2 (int), area_pass (bool),
+                cover1 (float), cover2 (float), intersection_area (float).
+            show: "true" to invoke debugging visualization; "false" otherwise.
+
+        Returns:
+            None. Populates `self.obj_pair`, `self._raw_g_pair`, and `self.patch`.
+
+        Raises:
+            ValueError: If helper functions detect missing columns or invalid
+                schema in the provided DataFrame.
+
+        Side Effects:
+            Mutates internal state; may trigger visualization when show == "true".
+        """
         self.df = df
         df_true = df[df["area_pass"]]
         self.obj_pair = (obj1.id, obj2.id)
@@ -223,20 +297,38 @@ class Patch:
         s1 = create_summary(df_true, "tri1", "cover1", "tri2", obj1)
         s2 = create_summary(df_true, "tri2", "cover2", "tri1", obj2)
         s1e, s2e = validate_patch_with_dynamic_threshold(s1, s2, get_dynamic_threshold)
+        self.sum_df={obj1.id:s1e,obj2.id:s2e}
         tri1 = list(s1e[s1e["final_evaluation"]]["tri_id"])
         tri2 = list(s2e[s2e["final_evaluation"]]["tri_id"])
         g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1")
         g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
+        self.graph={obj1.id:g1,obj2.id:g2}
         self._raw_g_pair = {obj1.id: g1, obj2.id: g2}
         self.patch = {obj1.id: [], obj2.id: []}
         self.component_detect(g1, g2)
         if show == "true":
             self._debug_show(obj1, obj2)
+        pass
 
     # removed legacy __init__ and nested helpers
 
     @staticmethod
     def bfs_search_patch(graph_raw_data: Dict[int, List[int]]) -> List[List[int]]:
+        """Return connected components using BFS on an adjacency-list graph.
+
+        Args:
+            graph_raw_data: Mapping from tri_id to a list of adjacent tri_ids.
+                Must be a well-formed adjacency list; None is not allowed.
+
+        Returns:
+            A list of components, each component represented by a list of tri_ids.
+
+        Raises:
+            KeyError: If adjacency entries are malformed during traversal.
+
+        Side Effects:
+            None.
+        """
         visited = set()
         connected_components: List[List[int]] = []
         queue = deque()
@@ -257,6 +349,23 @@ class Patch:
         return connected_components
 
     def component_detect(self, g1: Dict, g2: Dict):
+        """Populate cross-linked components between two graphs.
+
+        Args:
+            g1: Graph dict for obj1; entries expected to include "adj" and
+                "cover_area" with subkey "true" -> "adj_tri_ids".
+            g2: Graph dict for obj2; same structure as `g1`.
+
+        Returns:
+            None. Updates `self.patch` in-place with:
+            {obj_id: [{"component": List[int], "adj": List[int]}], ...}
+
+        Raises:
+            KeyError: If required keys are missing in graph entries.
+
+        Side Effects:
+            Mutates `self.patch` based on detected adjacency relationships.
+        """
         g1_mod = {tri: elem.get('adj', []) for tri, elem in g1.items()}
         g2_mod = {tri: elem.get('adj', []) for tri, elem in g2.items()}
         g1_res =[]
@@ -284,52 +393,27 @@ class Patch:
         obj1_id, obj2_id = self.obj_pair
         self.patch = {obj1_id: g1_res, obj2_id: g2_res}
 
-    
-    def split_patch_with_norm_deg_ddeg(self,obj1,obj2):
-        def turn_g_to_df(g):
-            df_rows=[]
-            for tri_id,attrs in g.items():
-                # 基础字段
-                row = {
-                    'tri_id': tri_id,  # 把外层的数字key作为tri_id列
-                    'adj': attrs['adj'],
-                    'deg': attrs['deg'],
-                    'ddeg': attrs['ddeg']
-                }
-                    # 展开cover_area的true/false子字段（避免嵌套）
-                row['cover_area_true_ratio'] = attrs['cover_area']['true']['area_ratio']
-                row['cover_area_true_acc'] = attrs['cover_area']['true']['area_acc']
-                row['cover_area_true_adj_tri_ids'] = attrs['cover_area']['true']['adj_tri_ids']
-                row['cover_area_false_ratio'] = attrs['cover_area']['false']['area_ratio']
-                row['cover_area_false_acc'] = attrs['cover_area']['false']['area_acc']
-                row['cover_area_false_adj_tri_ids'] = attrs['cover_area']['false']['adj_tri_ids']
-                df_rows.append(row)
-            if df_rows:
-                df_component = pd.DataFrame(df_rows)
-            else:
-                df_component = pd.DataFrame(columns=[
-                    'tri_id','adj','deg','ddeg',
-                    'cover_area_true_ratio','cover_area_true_acc','cover_area_true_adj_tri_ids',
-                    'cover_area_false_ratio','cover_area_false_acc','cover_area_false_adj_tri_ids'
-                ])
-            return df_component      
-        g1=self._raw_g_pair[obj1.id]
-        df_obj1=turn_g_to_df(g1)
-        if 'ddeg' in df_obj1.columns and not df_obj1.empty:
-            boundry_tri1=set(df_obj1[df_obj1['ddeg']>0]['tri_id'].tolist())
-        else:
-            boundry_tri1=set()
-        for obj1_component in self.patch[obj1.id]:
-            if boundry_tri1==set():
-                continue
-            pass
-
-        # obj1_component_set=set(self.patch[obj1.id][0]['component'])
-        # g2=self._raw_g_pair[obj2.id]
-        # df_obj2=turn_g_to_df(g2)
-        pass
-
     def _debug_show(self,obj1,obj2) -> None:
+        """Render components using the active visualizer; for debug only.
+
+        Pre-conditions:
+            `self.patch` must already be populated by `component_detect`.
+        Post-conditions:
+            No mutation of algorithmic state; only visualization side effects.
+
+        Args:
+            obj1: First object to render; used to add meshes.
+            obj2: Second object to render.
+
+        Returns:
+            None.
+
+        Raises:
+            ImportError: If visualization interface cannot be imported.
+
+        Side Effects:
+            Performs I/O via the visualizer; does not change global state.
+        """
         try:
             from ..visualizer.visualizer_interface import IVisualizer
         except Exception:
