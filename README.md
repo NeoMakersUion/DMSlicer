@@ -27,6 +27,19 @@ print(model.count)
 pytest --maxfail=1 --disable-warnings -q
 ```
 
+## 数学变换工具
+- 位置：`src/dmslicer/math/rotation.py`
+- 依赖：`numpy`
+- 用法：
+```python
+import numpy as np
+from dmslicer.math import rotate_z_to_vector
+
+R = rotate_z_to_vector([1.0, 1.0, 1.0])
+z = np.array([0.0, 0.0, 1.0])
+assert np.allclose(R @ z, np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0))
+```
+
 ## 代码质量与静态检查
 ```bash
 black .

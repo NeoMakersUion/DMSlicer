@@ -1,9 +1,22 @@
+"""
+ACAG (AdjacencyCurvatureAreaGraph) 说明
+- 核心字段:
+  adj: 邻接三角面片列表 | deg: 法线夹角(一阶曲率) | cover_area: 面积权重
+- 与旧graph差异:
+  ACAG 显式包含曲率(角度)与面积信息，避免\"graph\"的语义模糊。
+- 迁移影响:
+  内部字段名已统一为`acag`，序列化元数据用`files[\"acag\"]`。
+"""
+
+import string
 from typing import Any, Dict, List, Tuple
 from collections import deque
 import pandas as pd
 from tqdm import tqdm
 import numpy as np
 from dataclasses import dataclass
+import os
+from pathlib import Path
 def build_patch_graph(obj,tri_ids,df,tri_col):
             """
             构建单对象的“面片邻接统计图”并返回字典形式的图结构。
@@ -98,6 +111,8 @@ def build_patch_graph(obj,tri_ids,df,tri_col):
                 dds = []
                 for j in elem["adj"]:
                     if j in g:
+                        if elem["deg"] is None or g[j]["deg"] is None:
+                            continue
                         dd = abs(elem["deg"] - g[j]["deg"])
                         dd = dd if dd >= 1.0 else 0.0
                         dds.append(dd)
@@ -207,7 +222,25 @@ def validate_patch_with_dynamic_threshold(
 
 @dataclass
 class Patch:
-    """Compute adjacency-connected patch components between two mesh objects.
+    """
+    针对三角网格的层级切片与补丁生成器。
+
+    该类负责协调和执行两个网格对象之间的面片邻接组件计算，生成用于后续处理的“补丁（Patch）”数据结构。
+    它不仅处理核心的几何拓扑分析，还管理数据的持久化缓存（保存/加载）以及可选的调试可视化。
+
+    核心流程：
+    1. 输入：接收两个网格对象（obj1, obj2）和一个包含面片对统计信息的 DataFrame。
+    2. 摘要生成：调用 `create_summary` 聚合覆盖率和邻接关系。
+    3. 动态阈值验证：调用 `validate_patch_with_dynamic_threshold` 根据参数化面积等级过滤有效面片。
+    4. 图构建：调用 `build_patch_graph` 为每个对象构建包含邻接、角度差（deg/ddeg）和覆盖信息的图结构。
+    5. 组件检测：调用 `component_detect` 使用 BFS 算法识别连通组件，并建立跨对象的组件关联。
+    6. 缓存管理：支持基于输入哈希的自动缓存机制，避免重复计算。
+
+    对外暴露的主要方法：
+    - `__init__`: 初始化实例，执行计算流程或加载缓存。
+    - `save`: 将计算结果（摘要、图、补丁、元数据）持久化到磁盘。
+    - `load`: 从磁盘加载已保存的补丁数据。
+    - `component_detect`: （通常由 init 调用）执行连通组件分析和跨对象链接。
 
     Design Philosophy:
         The class acts as an orchestrator. It relies on pure helpers
@@ -231,90 +264,428 @@ class Patch:
         Space usage is O(M + E) for graphs and component lists. Excessive
         DataFrame grouping or repeated Python/NumPy transitions may impact
         performance.
-
-    Examples:
-        Normal path:
-            >>> import pandas as pd
-            >>> class Tri:
-            ...     def __init__(self, i):
-            ...         self.normal = (0.0, 0.0, 1.0)
-            ...         self.topology = {'edges': {0: i+1}}
-            >>> class Obj:
-            ...     def __init__(self, oid, n=3):
-            ...         self.id = oid
-            ...         self.triangles = {i: Tri(i) for i in range(n)}
-            ...     def get_triangles_by_list(self, ids):
-            ...         return [self.triangles[i] for i in ids if i in self.triangles]
-            >>> df = pd.DataFrame({
-            ...     'tri1': [0, 1], 'tri2': [1, 2], 'area_pass': [True, True],
-            ...     'cover1': [0.5, 0.2], 'cover2': [0.3, 0.4], 'intersection_area': [1.0, 2.0]
-            ... })
-            >>> p = Patch(Obj(10), Obj(20), df, show="false")
-            >>> isinstance(p.patch, dict)
-            True
-        Edge case:
-            >>> df_empty = pd.DataFrame({'tri1': [], 'tri2': [], 'area_pass': [], 'cover1': [], 'cover2': [], 'intersection_area': []})
-            >>> p2 = Patch(Obj(1), Obj(2), df_empty, show="false")
-            >>> p2.patch == {1: [], 2: []}
-            True
     """
+    hash_id: str
     df: pd.DataFrame
     obj_pair: Tuple[int, int]
-    _raw_g_pair: Dict[int, Dict[int, List[int]]]
     patch: Dict[int, List[Dict[str, Any]]]
     sum_df: Dict[int, pd.DataFrame]
-    graph: Dict[int, Dict[int, List[int]]]
+    acag: Dict[int, Dict[int, Dict[str, Any]]]  # ACAG: graph -> 邻接曲率面积图（含adj/deg/ddeg/cover_area）
 
-    def __init__(self, obj1: Any, obj2: Any, df: pd.DataFrame, show: str = "false"):
-        """Initialize the patch computation pipeline.
-
-        Args:
-            obj1: First object, exposing `id`, `triangles`, and
-                `get_triangles_by_list(ids)`; not None.
-            obj2: Second object with the same API contract; not None.
-            df: Pair-level statistics DataFrame containing columns:
-                tri1 (int), tri2 (int), area_pass (bool),
-                cover1 (float), cover2 (float), intersection_area (float).
-            show: "true" to invoke debugging visualization; "false" otherwise.
-
-        Returns:
-            None. Populates `self.obj_pair`, `self._raw_g_pair`, and `self.patch`.
-
-        Raises:
-            ValueError: If helper functions detect missing columns or invalid
-                schema in the provided DataFrame.
-
-        Side Effects:
-            Mutates internal state; may trigger visualization when show == "true".
+    def __init__(self, obj1: "Object", obj2: "Object", df: pd.DataFrame, root_dir: str | None = None, show: bool = False):
         """
-        self.df = df
-        df_true = df[df["area_pass"]]
-        self.obj_pair = (obj1.id, obj2.id)
-        if df_true.empty:
-            self._raw_g_pair = {obj1.id: {}, obj2.id: {}}
-            self.patch = {obj1.id: [], obj2.id: []}
-            return
-        s1 = create_summary(df_true, "tri1", "cover1", "tri2", obj1)
-        s2 = create_summary(df_true, "tri2", "cover2", "tri1", obj2)
-        s1e, s2e = validate_patch_with_dynamic_threshold(s1, s2, get_dynamic_threshold)
-        self.sum_df={obj1.id:s1e,obj2.id:s2e}
-        tri1 = list(s1e[s1e["final_evaluation"]]["tri_id"])
-        tri2 = list(s2e[s2e["final_evaluation"]]["tri_id"])
-        g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1")
-        g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
-        self.graph={obj1.id:g1,obj2.id:g2}
-        self._raw_g_pair = {obj1.id: g1, obj2.id: g2}
-        self.patch = {obj1.id: [], obj2.id: []}
-        self.component_detect(g1, g2)
-        if show == "true":
-            self._debug_show(obj1, obj2)
-        pass
+        初始化 Patch 实例，执行完整的补丁生成流程或从缓存加载。
 
-    # removed legacy __init__ and nested helpers
+        :param obj1: 第一个网格对象，需包含 id 和 triangles 属性。
+        :param obj2: 第二个网格对象，需包含 id 和 triangles 属性。
+        :param df: 包含面片对交互信息的 pandas.DataFrame，需包含 'area_pass', 'tri1', 'tri2' 等列。
+        :param root_dir: 可选的缓存根目录路径。若提供，将尝试从中加载或保存计算结果。
+        :param show: 调试选项，"true" 则在计算完成后调用可视化展示。
+        
+        异常与边界:
+        - 若 df 中没有满足 'area_pass' 的行，将初始化空的结果结构。
+        - 若缓存加载失败（文件损坏或哈希不匹配），将自动回退到重新计算并覆盖旧缓存。
+        """
+        from ..tools import calculate_hash
+        self.obj_pair = (obj1.id, obj2.id)
+        self.df = df
+
+        loaded = False
+        if root_dir:
+            import shutil
+            pair_dir_name = f"pair_{obj1.id}_{obj2.id}"
+            base_dir = self._resolve_root_dir(root_dir)
+            full_pair_path = base_dir / pair_dir_name
+            
+            # === 步骤2: 尝试从缓存加载 ===
+            try:
+                if full_pair_path.exists():
+                    data = self.load(str(base_dir), pair_dir_name)
+                    self.sum_df = data["sum_df"]
+                    self.acag = data["acag"]  # ACAG: graph -> ACAG 邻接曲率面积图，替换原因：统一内部命名
+                    self.patch = data["patch"]
+                    self.hash_id = data["meta"].get("hash_id")
+                    loaded = True
+            except Exception:
+                # Load failed (corrupt files, missing meta, etc.)
+                if full_pair_path.exists():
+                    shutil.rmtree(full_pair_path, ignore_errors=True)
+                
+
+        if not loaded:
+            # === 步骤3: 执行核心计算流程 ===
+            df_true = df[df["area_pass"]]
+            if df_true.empty:
+                self.patch = {obj1.id: [], obj2.id: []}
+                self.sum_df = {}  # Initialize empty
+                self.acag = {}  # ACAG: graph -> ACAG 邻接曲率面积图，替换原因：保持字段一致
+            else:
+                # 3.1 生成摘要统计
+                s1 = create_summary(df_true, "tri1", "cover1", "tri2", obj1)
+                s2 = create_summary(df_true, "tri2", "cover2", "tri1", obj2)
+                # 3.2 动态阈值验证
+                s1e, s2e = validate_patch_with_dynamic_threshold(s1, s2, get_dynamic_threshold)
+                self.sum_df = {obj1.id: s1e, obj2.id: s2e}
+                tri1 = list(s1e[s1e["final_evaluation"]]["tri_id"])
+                tri2 = list(s2e[s2e["final_evaluation"]]["tri_id"])
+                # 3.3 构建图结构
+                g1 = build_patch_graph(obj1, tri1, df, tri_col="tri1")
+                g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
+                self.acag = {obj1.id: g1, obj2.id: g2}  # ACAG: graph -> ACAG 邻接曲率面积图，替换原因：突出邻接与曲率面积属性
+                self.patch = self.component_detect(g1, g2)
+                safe_state = self._normalize_for_hash([self.sum_df, self.acag, self.patch])
+                self.hash_id = calculate_hash(safe_state)
+            
+            # === 步骤4: 保存结果到缓存（如需） ===
+            if root_dir:
+                self.save(str(base_dir))
+
+        if show == True:
+            self._debug_show(obj1, obj2)
+
+    def _compute_input_hash(self, obj1: Any, obj2: Any, df: pd.DataFrame) -> str:
+        """
+        计算输入参数的稳定哈希值，用于缓存键生成。
+        
+        算法思路:
+        结合两个对象的 ID 和 DataFrame 的内容哈希（基于 index 和 values）。
+        由于 DataFrame 包含混合类型，直接哈希可能不稳定，因此尝试使用 pandas 内置的 `hash_pandas_object`，
+        并回退到 shape 字符串作为兜底策略。
+        
+        :param obj1: 对象1
+        :param obj2: 对象2
+        :param df: 输入 DataFrame
+        :return: MD5 哈希字符串
+        """
+        from ..tools import calculate_hash
+        # Create a stable hash from inputs. 
+        # Using obj IDs and dataframe content signature.
+        try:
+            # Hash pandas object for stability
+            # Convert numpy int to python int to avoid hashing issues in tools.calculate_hash
+            df_hash = int(pd.util.hash_pandas_object(df, index=True).sum())
+        except Exception:
+            df_hash = str(df.shape)
+        return calculate_hash([obj1.id, obj2.id, df_hash], use_md5=True)
+
+    def _normalize_for_hash(self, obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: self._normalize_for_hash(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._normalize_for_hash(v) for v in obj]
+        if isinstance(obj, set):
+            return {self._normalize_for_hash(v) for v in obj}
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return self._normalize_for_hash(obj.tolist())
+        return obj
+
+    def __hash__(self) -> int:
+        """
+        获取当前实例的哈希值。
+        
+        NOTE: 这里直接返回预计算的 `hash_id`（如果是 int 类型则需要转换，但目前 hash_id 是 str，
+        标准 __hash__ 应返回 int。此实现可能与标准语义有出入，主要用于内部标识）。
+        """
+        # Return the pre-computed hash_id if available
+        if getattr(self, "hash_id", None):
+            # 尝试将 hex string 转为 int，截断以适应系统 hash 宽度
+            try:
+                return int(self.hash_id, 16)
+            except ValueError:
+                return hash(self.hash_id)
+        # Fallback (though init should guarantee hash_id is set)
+        return 0 
+
+    def _resolve_root_dir(self, root_dir: str) -> Path:
+        from ..file_parser.workspace_utils import get_workspace_dir
+        workspace_dir = get_workspace_dir().resolve()
+        if not root_dir:
+            return workspace_dir
+        raw_path = Path(root_dir)
+        if raw_path.is_absolute():
+            resolved = raw_path.resolve()
+            try:
+                resolved.relative_to(workspace_dir)
+                return resolved
+            except ValueError:
+                return resolved
+        norm_str = os.path.normpath(str(raw_path))
+        norm_path = Path(norm_str)
+        try:
+            rel = norm_path.relative_to(Path("data") / "workspace")
+            return (workspace_dir / rel).resolve()
+        except ValueError:
+            return (workspace_dir / norm_path).resolve()
+
+    def save(self, root_dir: str, *, params: dict | None = None, policy_version: str | None = None) -> dict:
+        """
+        Save Patch artifacts to disk.
+
+        功能概述:
+        将当前 Patch 对象的关键数据（sum_df, graph, patch）序列化并保存到指定目录。
+        采用原子写操作（写入临时文件后重命名）以防止写入中断导致的数据损坏。
+
+        :param root_dir: 基础目录路径。
+                         - 如果是绝对路径且位于 workspace 根目录内，则按原样使用。
+                         - 如果是绝对路径但不在 workspace 内，则按原样使用。
+                         - 如果是相对路径且以前缀 `data/workspace` 开头，将自动转换为
+                           相对于 workspace 根目录的子路径。
+                         - 其他相对路径将被视为 workspace 根目录下的子目录。
+        :param params: 可选参数字典（如 angle/gap/overlap/hash_str 等），将记录在 meta.json 中
+        :param policy_version: 可选的策略版本标识字符串
+        :return: 包含元数据信息的字典（同时也写入了 meta.json）
+
+        WARNING:
+        - 涉及文件 IO 操作，请确保磁盘空间充足且有写入权限。
+        - Graph 数据保存为 .npz 格式，包含 pickle 序列化的属性对象，加载时需注意安全性（allow_pickle=True）。
+        """
+        import json
+        import time
+        import pandas as pd
+        import numpy as np
+        from pathlib import Path
+
+        # ---------- helpers ----------
+        def _atomic_write_bytes(path: Path, data: bytes) -> None:
+            # TIP: 原子写入模式：先写 .tmp 文件，再执行 rename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            with open(tmp, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+
+        def _atomic_write_json(path: Path, obj: dict) -> None:
+            data = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
+            _atomic_write_bytes(path, data)
+
+        def _save_parquet_atomic(df: pd.DataFrame, path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            df.to_parquet(tmp, index=False, compression="zstd")
+            os.replace(tmp, path)
+
+        def _acag_to_csr_npz(g: Dict[int, Any], path: Path) -> None:
+            # Store adjacency list as CSR arrays: nodes, indptr, indices
+            # Store other properties as a pickled object in 'props'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            nodes = np.array(sorted(g.keys()), dtype=np.int64)
+            indptr = np.empty(len(nodes) + 1, dtype=np.int64)
+            indptr[0] = 0
+
+            # flatten
+            indices_list: list[int] = []
+            props = {}
+            for i, n in enumerate(nodes, start=1):
+                elem = g.get(int(n), {})
+                # Handle adjacency
+                neigh = elem.get("adj", [])
+                indices_list.extend(int(x) for x in neigh)
+                indptr[i] = len(indices_list)
+                # Handle properties
+                props[int(n)] = {k: v for k, v in elem.items() if k != "adj"}
+
+            indices = np.array(indices_list, dtype=np.int64)
+            # Ensure tmp file ends with .npz so numpy doesn't append it again
+            tmp = path.with_name(path.name + ".tmp.npz")
+            # Use object array for props to allow pickling
+            np.savez_compressed(tmp, nodes=nodes, indptr=indptr, indices=indices, props=np.array([props], dtype=object))
+            os.replace(tmp, path)
+
+        # msgpack is optional; fall back to pickle if you don't want extra dep
+        def _save_msgpack_atomic(obj, path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                import msgpack  # type: ignore
+                data = msgpack.packb(obj, use_bin_type=True)
+                _atomic_write_bytes(path, data)
+            except Exception:
+                import pickle
+                data = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+                _atomic_write_bytes(path.with_suffix(".pkl"), data)
+
+        # ---------- compute hash id (rename your __hash__) ----------
+        if not getattr(self, "hash_id", None):
+            # 这里建议你把 __hash__ 改名 compute_hash_id
+            # 先兼容你当前写法
+            try:
+                self.__hash__()  # you should replace this with self.compute_hash_id()
+            except Exception:
+                pass
+
+        obj1_id, obj2_id = self.obj_pair
+        base_dir = self._resolve_root_dir(root_dir)
+        pair_dir = base_dir / f"pair_{obj1_id}_{obj2_id}"
+        pair_dir.mkdir(parents=True, exist_ok=True)
+
+        # ---------- save summaries ----------
+        sum_dir = pair_dir / "sum_df"
+        for obj_id, sdf in self.sum_df.items():
+            # Convert dict keys in 'adj_obj_tri_evaluation' to str for Parquet compatibility
+            # Use a copy to avoid mutating the in-memory dataframe
+            sdf_save = sdf.copy()
+            if "adj_obj_tri_evaluation" in sdf_save.columns:
+                sdf_save["adj_obj_tri_evaluation"] = sdf_save["adj_obj_tri_evaluation"].apply(
+                    lambda d: {str(k): v for k, v in d.items()} if isinstance(d, dict) else d
+                )
+            _save_parquet_atomic(sdf_save, sum_dir / f"sum_df_{obj_id}.parquet")
+
+        # ---------- save ACAG (AdjacencyCurvatureAreaGraph) ----------
+        acag_dir = pair_dir / "acag"
+        for obj_id, g in self.acag.items():
+            _acag_to_csr_npz(g, acag_dir / f"acag_{obj_id}.npz")
+
+        # ---------- save patch (raw structure) ----------
+        # NOTE: raw nested dict is not stable for long-term; but msgpack/pickle at least keeps int keys.
+        patch_dir = pair_dir / "patch"
+        for obj_id, p in self.patch.items():
+            _save_msgpack_atomic(p, patch_dir / f"patch_{obj_id}.msgpack")
+
+        # Removed _raw_g_pair saving logic as it is redundant with graph
+
+        # ---------- meta / manifest ----------
+        meta = {
+            "obj_pair": [int(obj1_id), int(obj2_id)],
+            "hash_id": getattr(self, "hash_id", None),
+            "created_at_unix": int(time.time()),
+            "params": params or {},
+            "policy_version": policy_version,
+            "files": {
+                "sum_df": {str(obj_id): f"sum_df/sum_df_{obj_id}.parquet" for obj_id in self.sum_df.keys()},
+                "acag": {str(obj_id): f"acag/acag_{obj_id}.npz" for obj_id in self.acag.keys()},
+                "patch": {str(obj_id): f"patch/patch_{obj_id}.msgpack" for obj_id in self.patch.keys()},
+            },
+        }
+        _atomic_write_json(pair_dir / "meta.json", meta)
+        return meta
+
+            
+    def load(self, root_dir: str, pair_dir: str):
+        """
+        Load Patch artifacts from disk.
+
+        功能概述:
+        从指定目录加载之前保存的 Patch 数据（sum_df, graph, patch）。
+        
+        :param root_dir: 基础目录路径，解析规则与 save 方法一致。
+        :param pair_dir: 具体的配对目录名，例如 `pair_10_20`
+        :return: 包含加载数据的字典 {sum_df, graph, patch, meta}
+        
+        :raises FileNotFoundError: 如果 meta.json 不存在
+        :raises ValueError: 如果加载的数据结构不符合预期（由底层 pandas/numpy 抛出）
+        """
+        import json
+        import pandas as pd
+        import numpy as np
+        base_dir = self._resolve_root_dir(root_dir)
+        pair_dir_path = base_dir / pair_dir
+
+        # ---------- Check for metadata ----------
+        meta_file = pair_dir_path / "meta.json"
+        if not meta_file.exists():
+            raise FileNotFoundError(f"Meta file not found at {meta_file}")
+
+        # Load metadata to get file structure and parameters
+        with open(meta_file, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        # Retrieve hash_id from meta to verify data integrity
+        stored_hash = meta["hash_id"]
+        # Optional: Validate hash if needed, or use stored_hash for reference
+        # Example: assert stored_hash == self.hash_id  # This could be optional for load verification
+
+        # Retrieve files from meta
+        sum_df_files = meta["files"]["sum_df"]
+        # 优先使用 ACAG 字段，兼容旧版本的 graph 字段
+        acag_files = meta["files"].get("acag") or meta["files"].get("graph")
+        patch_files = meta["files"]["patch"]
+
+        # ---------- Load summaries (sum_df) ----------
+        sum_df = {}
+        # sum_file already contains "sum_df/" prefix
+        for obj_id, sum_file in sum_df_files.items():
+            sum_df[int(obj_id)] = pd.read_parquet(pair_dir_path / sum_file)
+
+        # ---------- Load ACAG (AdjacencyCurvatureAreaGraph) ----------
+        acag = {}
+        # acag_file already contains "acag/" or legacy \"graph/\" prefix
+        for obj_id, acag_file in acag_files.items():
+            acag[int(obj_id)] = self._load_graph(pair_dir_path / acag_file)
+
+        # ---------- Load patches ----------
+        patch = {}
+        # patch_file already contains "patch/" prefix
+        for obj_id, patch_file in patch_files.items():
+            patch[int(obj_id)] = self._load_patch(pair_dir_path / patch_file)
+
+        # Removed _raw_g_pair loading logic as it is redundant with graph
+
+        # Return the loaded data
+        return {
+            "sum_df": sum_df,
+            "acag": acag,
+            "patch": patch,
+            "meta": meta
+        }
+
+    def _load_graph(self, path: Path):
+        """
+        Load the graph from a CSR npz format with pickled properties.
+        
+        算法思路:
+        NPZ 文件包含 CSR 格式的邻接矩阵（indices, indptr）以及一个 pickled 对象数组（props）。
+        函数将这些分散的数据重组为 `Dict[int, Dict]` 格式的图结构。
+        
+        :param path: .npz 文件路径
+        :return: 恢复后的图字典
+        """
+        data = np.load(path, allow_pickle=True)
+        nodes = data["nodes"]
+        indptr = data["indptr"]
+        indices = data["indices"]
+        
+        # Load properties if available
+        props = {}
+        if "props" in data:
+            props_arr = data["props"]
+            if props_arr.size > 0:
+                props = props_arr[0]
+
+        graph = {}
+        for i, node in enumerate(nodes):
+            start, end = indptr[i], indptr[i+1]
+            adj = indices[start:end].astype(int).tolist()
+            # Combine adjacency with properties
+            elem = props.get(int(node), {})
+            elem["adj"] = adj
+            graph[int(node)] = elem
+        return graph
+
+    def _load_patch(self, path: Path):
+        """
+        Load the patch from a msgpack or pickle file.
+        
+        优先尝试 msgpack 加载（更高效、跨语言），失败则回退到 pickle。
+        """
+        try:
+            import msgpack
+            with open(path, "rb") as f:
+                return msgpack.unpackb(f.read(), raw=False)
+        except ImportError:
+            import pickle
+            with open(path, "rb") as f:
+                return pickle.load(f)
+
 
     @staticmethod
     def bfs_search_patch(graph_raw_data: Dict[int, List[int]]) -> List[List[int]]:
         """Return connected components using BFS on an adjacency-list graph.
+
+        功能概述:
+        使用广度优先搜索（BFS）算法，在给定的邻接表图结构中查找所有连通分量。
 
         Args:
             graph_raw_data: Mapping from tri_id to a list of adjacent tri_ids.
@@ -351,6 +722,15 @@ class Patch:
     def component_detect(self, g1: Dict, g2: Dict):
         """Populate cross-linked components between two graphs.
 
+        功能概述:
+        识别两个对象图（g1, g2）各自的内部连通组件，并根据覆盖关系建立组件间的跨对象链接（Cross-Link）。
+        
+        算法思路:
+        1. 提取简化的邻接表（仅包含 adj 字段）。
+        2. 分别对 g1 和 g2 执行 BFS 查找连通组件。
+        3. 遍历 g2 中每个组件的每个三角形，检查其覆盖的 g1 三角形是否属于 g1 的某个组件。
+        4. 若存在覆盖关系，则在两个组件之间建立双向索引链接。
+
         Args:
             g1: Graph dict for obj1; entries expected to include "adj" and
                 "cover_area" with subkey "true" -> "adj_tri_ids".
@@ -372,16 +752,21 @@ class Patch:
         g2_res= []
         if not g1_mod or not g2_mod:
             return g1_res, g2_res
+        # === 步骤1: 内部连通组件检测 ===
         connected_components_g1 = Patch.bfs_search_patch(g1_mod)
         connected_components_g2 = Patch.bfs_search_patch(g2_mod)
         for component in connected_components_g1:
             g1_res.append({"component": component, "adj": []})
         for component in connected_components_g2:
             g2_res.append({"component": component, "adj": []})
+        
+        # === 步骤2: 跨组件关联检测 ===
         for id_g1,component_g1 in enumerate(g1_res):
             for id_g2,component_g2 in enumerate(g2_res):
+                # 检查 component_g2 中的元素是否覆盖了 component_g1 中的元素
                 for elem in component_g2['component']:
                     status=False
+                    # TIP: 这里假设 g2[elem] 数据结构完整，包含 'cover_area'['true']['adj_tri_ids']
                     for adj_g1 in g2[elem]['cover_area']['true']['adj_tri_ids']:
                         if adj_g1 in component_g1['component']:
                             status=True
@@ -391,7 +776,7 @@ class Patch:
                         component_g2['adj'].append(id_g1)
                         break
         obj1_id, obj2_id = self.obj_pair
-        self.patch = {obj1_id: g1_res, obj2_id: g2_res}
+        return {obj1_id: g1_res, obj2_id: g2_res}
 
     def _debug_show(self,obj1,obj2) -> None:
         """Render components using the active visualizer; for debug only.

@@ -10,7 +10,7 @@ import pandas as pd
 from .config import GEOM_ACC
 from .bvh import build_bvh, BVHNode, AABB
 
-from .transforms import rotate_z_to_vector
+from ..math import rotate_z_to_vector
 R=rotate_z_to_vector(np.array([1,1,100]))
 @dataclass
 class Object:

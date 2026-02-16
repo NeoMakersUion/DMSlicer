@@ -78,8 +78,8 @@ class Geom:
         self.__hash__()
         
         if self._load_from_cache():
-            res,output_dir=self.__build_object_contact_triangles()
-            res,output_dir=self.__build_object_contact_patch_level(res,output_dir)
+            res,pair_level_dir=self.__build_object_contact_triangles()
+            res,patch_level_dir=self.__build_object_contact_patch_level(res,pair_level_dir)
             return
         # Try to load from cache
 
@@ -640,10 +640,15 @@ class Geom:
         return pair_level_result, output_dir
 
  
-    def __build_object_contact_patch_level(self,res,output_dir):
+    def __build_object_contact_patch_level(self,res,pair_level_dir):
         import os
         import pandas as pd
-
+        hash_str = self.model.hash_id if self.model else "unknown_model"
+        output_dir = os.path.join(
+            "data", "workspace", str(hash_str), "patch_level",
+            f"angle_{SOFT_NORMAL_GATE_ANGLE}_gap_{MAX_GAP_FACTOR}_overlap_{OVERLAP_RATIO_THRESHOLD}"
+        )
+        
         patch_level_result = {}
         for obj_pair,file_name in tqdm(res.items(),desc="build_patch_graph",total=len(res),leave=False):
             if isinstance(obj_pair, str):
@@ -651,16 +656,27 @@ class Geom:
                 str_elements = obj_pair_str.strip('()').split(',')
                 obj_pair = tuple(int(elem.strip()) for elem in str_elements)
 
-            obj1,obj2=obj_pair
-            obj1=self.objects[obj1]
-            obj2=self.objects[obj2]
-            file_path = os.path.join(output_dir, file_name)
+            obj1_idx,obj2_idx=obj_pair
+            obj1=self.objects[obj1_idx]
+            obj2=self.objects[obj2_idx]
+            file_path = os.path.join(pair_level_dir, file_name)
             df=pd.read_feather(file_path)
             from .patch_level import Patch
-            patch=Patch(obj1,obj2,df,show="true")
-            patch_level_result[(obj1.id, obj2.id)  ] = {"patch": patch}
-
-            
+            patch=Patch(obj1=obj1,obj2=obj2,df=df,root_dir=output_dir,show=False)
+            patch_level_result[obj_pair] = patch
+        for obj_pair,data in patch_level_result.items():
+            obj1_idx,obj2_idx=obj_pair
+            filename = (
+                f"patch_level_result_",
+                f"{obj1_idx}_{obj2_idx}",
+                f"_angle_{SOFT_NORMAL_GATE_ANGLE}"
+                f"_gap_{MAX_GAP_FACTOR}"
+                f"_overlap_{OVERLAP_RATIO_THRESHOLD}.json"
+            )
+            # ⚠️ 建议加 encoding='utf-8'，并 ensure_ascii=False（如果 key/路径有中文更安全）
+            with open(os.path.join(output_dir, filename), "w") as f:
+                json.dump(pair_level_result, f, indent=4)            
+            pass
         return patch_level_result,output_dir
 
     def show(self, visualizer_type: Optional[VisualizerType] = DEFAULT_VISUALIZER_TYPE, **kwargs):
