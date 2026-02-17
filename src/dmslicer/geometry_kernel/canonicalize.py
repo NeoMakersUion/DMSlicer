@@ -35,6 +35,7 @@ from ..file_parser.workspace_utils import get_workspace_dir
 EPSILON=1
 from .static_class import Status, VerticesOrder, TrianglesOrder, IdOrder, QualityGrade
 from .triangle import Triangle
+from .patch_level import Patch
 
 
 from ..cache.compute_cache import ComputeCache
@@ -56,7 +57,7 @@ scale = int(10 ** GEOM_ACC)                 # 坐标放大倍数
 min_edge_mm = 0.5 * (10 ** (-PROCESS_ACC))  # 例如 PROCESS_ACC=2 -> 0.005mm
 
 class Geom:
-    def __init__(self,model:"Model",acc=GEOM_ACC,parallel_acc=GEOM_PARALLEL_ACC,vertices_order=VerticesOrder.ZYX,triangles_order=TrianglesOrder.P132) -> None:
+    def __init__(self,model:"Model",acc=GEOM_ACC,parallel_acc=GEOM_PARALLEL_ACC,vertices_order=VerticesOrder.ZYX,triangles_order=TrianglesOrder.P132,show=False) -> None:
         self.acc: int = acc
         self.parallel_acc:Optional[float]=parallel_acc
         self.vertices_order:VerticesOrder=vertices_order
@@ -77,21 +78,21 @@ class Geom:
         # Calculate hash early for cache lookup
         self.__hash__()
         
-        if self._load_from_cache():
-            pair_level_files,pair_level_dir=self.__build_object_contact_triangles()
-            patch_level_result,patch_level_dir=self.__build_object_contact_patch_level(pair_level_files,pair_level_dir)
-            return
-        # Try to load from cache
+        if not self._load_from_cache():
+            # If not cached, compute
+            self.__merge_all_meshes()
+            self.__sort__()
+            self.__build_object_contact_graph()
+            # Save to cache
+            self._save_to_cache()
+            if show:
+                self.show()
 
-        # If not cached, compute
-        self.__merge_all_meshes()
-        self.__sort__()
-        self.__build_object_contact_graph()
-        self._save_to_cache()
+        # Try to load from cache
         pair_level_files,pair_level_dir=self.__build_object_contact_triangles()
-        # 
-        # Save to cache
-        # self.show()
+        patch_level_result,patch_level_dir=self.__build_object_contact_patch_level(pair_level_files,pair_level_dir,show=show)
+        self.patch_info=patch_level_result
+
     @property
     def hash_id(self) -> str:
         # 延迟计算：仅在首次访问 hash_id 属性时才生成哈希值，避免初始化阶段不必要的计算开销
@@ -397,19 +398,28 @@ class Geom:
         
     def __build_object_contact_triangles(self):
         """
-        构建（或读取缓存的）“对象对 → 三角形对”的接触候选结果。
-        输出目录: ./data/workspace/{hash_id}/pair_level/angle_x_gap_y_overlap_z/
-        - 若目录下已存在 json 缓存：直接读取并返回
-        - 否则：遍历 obj_adj_bvh_pair 中的对象对与三角形对，计算 angle/gap/overlap 并保存 feather + 总索引 json
+        Build or load candidate contact triangle pairs for each object pair.
+        构建（或读取缓存的）“对象对 → 三角形对”接触候选结果。
+
+        Output directory: data/workspace/{hash_id}/pair_level/angle_{A}_gap_{G}_overlap_{O}/.
+        输出目录：data/workspace/{hash_id}/pair_level/angle_{A}_gap_{G}_overlap_{O}/。
+
+        If a JSON index already exists, load it and return without recomputation.
+        若目录下已存在 JSON 索引，则直接读取并返回，避免重复计算。
+
+        Otherwise, iterate over all object pairs and triangle pairs, compute angle/gap/overlap,
+        否则遍历所有对象对与三角形对，计算 angle/gap/overlap 等几何指标，
+
+        and persist per-pair feather files plus a global JSON index.
+        并为每个对象对保存 feather 文件及全局 JSON 索引文件。
         """
 
-        # -------------------------
-        # Import: 几何计算相关函数
-        # -------------------------
+        # Geometry primitives used to evaluate triangle contact metrics.
+        # 几何基础函数，用于计算三角形接触相关的各类度量。
         # compute_gap:           三角形间最小距离（或某种近似 gap）
         # compute_dihedral_angle:两个法向量夹角（0~90 度的无向夹角）
         # triangle_normal_vector:计算三角形法向量
-        # overlap_area_3d:       估计三角形之间的重叠覆盖率 / 交叠面积（你自定义的 3D overlap 指标）
+        # overlap_area_3d:       估计三角形之间的重叠覆盖率 / 交叠面积（你自定义的 3D overlap 指标）        
         from .intersection import (
             compute_gap,
             compute_dihedral_angle,
@@ -421,42 +431,42 @@ class Geom:
         import os
         import json
 
-        # pair_level_result: 用于记录每个 obj_pair 对应的 feather 文件名
-        # 结构：{"(obj1_id, obj2_id)": "tri_pairs_obj1_obj2_....feather", ...}
+        # Mapping from object pair to feather file name.
+        # 记录每个对象对对应的 feather 文件名。
         pair_level_result = {}
 
-        # -------------------------
-        # 1) 输出目录构建
-        # -------------------------
-        # hash_str：模型 hash_id，用于隔离不同模型/不同运行的缓存目录
+        # Compute model-scoped cache directory based on model hash.
+        # 基于模型 hash 计算当前阶段的缓存目录，用于隔离不同模型或不同运行。
         hash_str = self.model.hash_id if self.model else "unknown_model"
 
-        # output_dir：按照参数组合建立子目录，方便区分不同门控阈值的结果
+        # Build a parameterized subdirectory to separate different gating configurations.
+        # 按参数组合建立子目录，区分不同门控阈值下的结果。
         output_dir = os.path.join(
             "data", "workspace", str(hash_str), "pair_level",
             f"angle_{SOFT_NORMAL_GATE_ANGLE}_gap_{MAX_GAP_FACTOR}_overlap_{OVERLAP_RATIO_THRESHOLD}"
         )
 
-        # 确保目录存在（支持嵌套路径）
+        # Ensure the directory exists before IO.
+        # 确保输出目录存在（包括嵌套路径）。
         os.makedirs(output_dir, exist_ok=True)
 
-        # ⚠️ 这个 pass 没必要（不影响运行，但可删）
-        pass
-
-        # -------------------------
-        # 2) 缓存读取：如果 output_dir 下已有 json，则直接读并返回
-        # -------------------------
+        # Try to reuse cached JSON index if it already exists under output_dir.
+        # 若 output_dir 下已有 JSON 索引，则尝试复用缓存并直接返回。
         def find_and_parse_json(output_dir):
             """
-            在 output_dir 递归查找第一个 .json 文件并解析返回 dict
-            找不到则返回 None
+            Recursively search output_dir for the first .json file and parse it as a dict.
+            在 output_dir 中递归查找第一个 .json 文件并解析为字典。
+
+            Return None when no JSON file is found or parsing fails.
+            若未找到 JSON 文件或解析失败，则返回 None。
             """
             if not os.path.exists(output_dir):
                 return None
 
             json_file_path = None
 
-            # 递归搜索目录下任意 json（找到第一个就停）
+            # Walk the directory tree and stop at the first JSON file discovered.
+            # 递归遍历目录树，在找到第一个 JSON 文件后立即停止搜索。
             for root, dirs, files in os.walk(output_dir):
                 for file in files:
                     if file.endswith('.json'):
@@ -469,32 +479,31 @@ class Geom:
                 return None
 
             try:
-                # ⚠️ BUG: 你这里写的是 'utf - 8'，中间有空格，真实编码名应为 'utf-8'
-                # 建议改为 encoding='utf-8'
-                with open(json_file_path, 'r', encoding='utf - 8') as f:
+                with open(json_file_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except json.JSONDecodeError as e:
                 print(f"解析 {json_file_path} 时出错: {e}")
                 return None
 
-        # 尝试读取缓存
+        # Try to load existing index; skip heavy computation if successful.
+        # 尝试读取已有索引；若成功则跳过后续重计算。
         res = find_and_parse_json(output_dir)
 
         if res is not None:
-            # 这里假设 json 的 key 是字符串形式 "(1, 2)"，你要转回 tuple(int,int)
-            # 例: "(3, 5)" -> (3, 5)
+            # JSON keys are stored as strings "(i, j)"; convert them back to tuple[int, int].
+            # JSON 中的 key 以 "(i, j)" 字符串形式存储；此处转换回 tuple[int, int]。
             new_keys = [tuple(map(int, key.strip('()').split(', '))) for key in res.keys()]
 
-            # 用新的 tuple key 替换旧 key
-            # ⚠️ 注意：zip(res.keys(), new_keys) 默认按插入顺序对应；只要 json dump 时顺序一致一般没问题
+            # Rebuild dict with tuple keys, preserving insertion order via zip.
+            # 使用 zip(res.keys(), new_keys) 保持插入顺序，将字符串 key 替换为 tuple key。
             res = {new_key: res[old_key] for old_key, new_key in zip(res.keys(), new_keys)}
 
-            # 直接返回缓存结果，不再重复计算
+            # Return cached mapping and directory; no further computation is needed.
+            # 直接返回缓存结果及目录路径，不再执行后续重计算。
             return res, output_dir
 
-        # -------------------------
-        # 3) 主循环：遍历“对象对 → 三角形对集合”，逐 tri-pair 计算指标
-        # -------------------------
+        # Main loop: iterate over object pairs and compute metrics for each triangle pair.
+        # 主循环：遍历“对象对 → 三角形对集合”，为每个三角形对计算几何指标。
         for obj_pair, tris_ids_pairs in tqdm(
             self.obj_adj_bvh_pair.items(),
             desc=f"Updating object contact triangles",
@@ -505,7 +514,8 @@ class Geom:
             obj1 = self.objects[obj1_id]
             obj2 = self.objects[obj2_id]
 
-            # rows：用于收集当前 obj_pair 下所有通过门控的 tri-pair 结果，最后转成 DataFrame
+            # Collect all accepted triangle-pair rows for the current object pair.
+            # 收集当前对象对下所有通过门控的三角形对结果，稍后转为 DataFrame。
             rows = []
 
             for t1_id, t2_id in tqdm(
@@ -514,55 +524,46 @@ class Geom:
                 total=len(tris_ids_pairs),
                 leave=False
             ):
-                # -------------------------
-                # A) Triangle 对象准备与法线缓存
-                # -------------------------
-                # 如果 triangles dict 里没有这个 Triangle，则创建并缓存
-                # 目的：避免重复构造 Triangle 与重复读取 vertices
-
+                # Prepare triangle objects and ensure normals are cached.
+                # 准备 Triangle 对象并确保法向量已缓存，避免重复计算。
                 tri1 = obj1.triangles[t1_id]
                 tri2 = obj2.triangles[t2_id]
 
-                # 若法线未计算过，则计算并缓存
+                # Lazily compute and cache normals if missing.
+                # 若法线尚未计算，则按需计算并缓存。
                 if tri1.normal is None:
                     tri1.normal = triangle_normal_vector(tri1.vertices)
                 if tri2.normal is None:
                     tri2.normal = triangle_normal_vector(tri2.vertices)
 
-                # -------------------------
-                # 1) 法线夹角门控（软门控）
-                # -------------------------
-                # 无向夹角：0~90°
+                # Soft gate 1: dihedral angle between triangle normals.
+                # 软门控 1：基于三角形法线夹角的筛选。
                 angle_deg = compute_dihedral_angle(tri1.normal, tri2.normal)
 
-                # SOFT_NORMAL_GATE_ANGLE：仅剔除极端不共面（例如 >60°）
+                # Discard pairs that are too non-coplanar (angle above SOFT_NORMAL_GATE_ANGLE).
+                # 若夹角大于 SOFT_NORMAL_GATE_ANGLE（极端不共面），则丢弃该三角形对。
                 if angle_deg > SOFT_NORMAL_GATE_ANGLE:
                     continue
 
-                # -------------------------
-                # 2) gap 门控（尺度感知阈值）
-                # -------------------------
-                # 局部特征长度 h：取两三角形最小边长的最小值
-                # 直觉：小三角形允许的 gap 更小，大三角形允许的 gap 更大
+                # Soft gate 2: gap threshold scaled by local feature size.
+                # 软门控 2：基于局部特征尺寸缩放的 gap 阈值。
                 h = np.min([tri1.min_edge, tri2.min_edge])
 
-                # 最大 gap 阈值 ε_max = β * h
+                # Maximum allowed gap epsilon_max = MAX_GAP_FACTOR * h.
+                # 最大允许间隙 ε_max = MAX_GAP_FACTOR * h。
                 max_gap_threshold = MAX_GAP_FACTOR * h
 
-                # compute_gap 内部可能是：
-                # - 先用 gap_threshold 做 early break / 快速判断
-                # - 或者用它限制搜索范围
+                # compute_gap may use gap_threshold for early break or search pruning.
+                # compute_gap 可能使用 gap_threshold 进行提前终止或搜索范围裁剪。
                 gap = compute_gap(tri1, tri2, gap_threshold=h * INITIAL_GAP_FACTOR)
 
-                # 超出容差则丢弃
+                # Discard triangle pairs whose gap exceeds the scaled threshold.
+                # 若 gap 超出缩放后的阈值，则丢弃该三角形对。
                 if gap > max_gap_threshold:
                     continue
 
-                # -------------------------
-                # 3) overlap / cover 计算
-                # -------------------------
-                # cover1/cover2：你定义的“tri1 被 tri2 覆盖比例 / tri2 被 tri1 覆盖比例”
-                # intersection_area：交叠面积（或投影交叠面积等）
+                # Stage 3: overlap / cover ratio computation.
+                # 第三阶段：计算 overlap / cover 比例和交叠面积。
                 if tri1.parametric_area_grade==QualityGrade.CRITICAL and tri2.parametric_area_grade==QualityGrade.CRITICAL:
                     cover1=0
                     cover2=0
@@ -570,7 +571,8 @@ class Geom:
                 else:
                     cover1, cover2, intersection_area = overlap_area_3d(tri1, tri2)
 
-                # 保存 tri-pair 的统计结果
+                # Append per-pair statistics row.
+                # 追加当前三角形对的统计结果。
                 rows.append({
                     "tri1": t1_id,
                     "tri2": t2_id,
@@ -581,30 +583,34 @@ class Geom:
                     "cover_max": max(cover1, cover2),
                     "intersection_area": intersection_area,
 
-                    # area_pass：是否达到覆盖率阈值（你最终用这个决定是否算“接触/重叠”）
+                    # area_pass marks whether the pair passes the overlap ratio threshold.
+                    # area_pass 标记该三角形对是否通过覆盖率阈值判断（是否视为接触/重叠）。
                     "area_pass": max(cover1, cover2) >= OVERLAP_RATIO_THRESHOLD
                 })
 
-            # 当前 obj_pair 没有任何候选 tri-pair，则跳过
+            # Skip this object pair if no triangle pairs survive gating.
+            # 若当前对象对没有任何候选三角形对，则直接跳过。
             if rows == []:
                 continue
 
-            # 结果转 DataFrame（方便保存与后处理）
+            # Convert accumulated rows into a DataFrame for IO and downstream processing.
+            # 将累积的行转换为 DataFrame，便于持久化与后续处理。
             df = pd.DataFrame(rows)
 
-            # -------------------------
-            # 4) 保存当前 obj_pair 的 tri-pair 结果到 feather
-            # -------------------------
+            # Persist current object-pair results into a feather file.
+            # 将当前对象对的三角形对结果保存为 feather 文件。
             def sanitize(s):
                 """
-                清理文件名：只保留字母数字、-、_，避免路径字符导致保存失败
+                Sanitize filename component by keeping only [a-zA-Z0-9-_] characters.
+                清理文件名片段，仅保留字母数字与 -/_，避免非法路径字符。
                 """
                 return "".join([c for c in str(s) if c.isalnum() or c in ('-', '_')])
 
             safe_obj1 = sanitize(obj1_id)
             safe_obj2 = sanitize(obj2_id)
 
-            # feather 文件名携带门控参数，便于追溯
+            # Encode gating parameters into the feather filename for traceability.
+            # 在 feather 文件名中编码门控参数，便于结果追溯。
             file_name = (
                 f"tri_pairs_{safe_obj1}_{safe_obj2}"
                 f"_angle_{SOFT_NORMAL_GATE_ANGLE}"
@@ -613,18 +619,16 @@ class Geom:
             )
             full_path = os.path.join(output_dir, file_name)
 
-            # 保存（feather 读写快，适合大量数据）
+            # Persist per-pair statistics in feather format for efficient IO.
+            # 以 feather 格式保存每个对象对的统计结果，以获得高效的读写性能。
             df.to_feather(full_path)
 
-            # 记录 obj_pair -> feather 文件名（用于总索引 json）
+            # Record mapping from object pair to feather filename for the global index JSON.
+            # 记录对象对到 feather 文件名的映射，用于后续生成全局 JSON 索引。
             pair_level_result[str(obj_pair)] = file_name
 
-            # ⚠️ 这个 pass 也没必要（可删）
-            pass
-
-        # -------------------------
-        # 5) 保存总索引 pair_level_result 到 json
-        # -------------------------
+        # Build and save a global JSON index mapping object pairs to feather files.
+        # 构建并保存全局 JSON 索引，将对象对映射到对应的 feather 文件。
         filename = (
             f"pair_level_result"
             f"_angle_{SOFT_NORMAL_GATE_ANGLE}"
@@ -632,75 +636,196 @@ class Geom:
             f"_overlap_{OVERLAP_RATIO_THRESHOLD}.json"
         )
 
-        # ⚠️ 建议加 encoding='utf-8'，并 ensure_ascii=False（如果 key/路径有中文更安全）
-        with open(os.path.join(output_dir, filename), "w") as f:
-            json.dump(pair_level_result, f, indent=4)
+        # Use explicit UTF-8 encoding and disable ASCII escaping for robustness.
+        # 使用显式 UTF-8 编码并关闭 ASCII 转义，以更好地支持中文路径或内容。
+        with open(os.path.join(output_dir, filename), "w", encoding="utf-8") as f:
+            json.dump(pair_level_result, f, indent=4, ensure_ascii=False)
 
-        # 返回：索引 dict + 输出目录
+        # Return the per-pair index mapping and the output directory path.
+        # 返回对象对索引映射以及输出目录路径。
         return pair_level_result, output_dir
 
- 
-    def __build_object_contact_patch_level(self,pair_level_files,pair_level_dir):
+    
+    def __build_object_contact_patch_level(self, pair_level_files, pair_level_dir, show: bool = False):
+        """
+        Build or load patch-level artifacts for all object pairs (pair-level -> patch-level).
+        构建或加载所有对象对的 patch-level 产物（从 pair-level 统计结果到 patch-level 结构）。
+
+        Design intent / Philosophy
+        设计意图 / 思想
+        --------------------------
+        This function is a pipeline orchestration step in the higher-level workflow (Gel pipeline).
+        该函数是 Gel 大流程中的一个“编排步骤”，负责将 patch-level 作为独立阶段落地与复用。
+        
+        Input: per-pair statistics DataFrame files (feather) produced by the pair-level stage.
+        输入：pair-level 阶段生成的对象对统计 DataFrame 文件（feather）。
+        
+        Output: Patch instances containing sum_df / acag / patch and a reproducible cache manifest.
+        输出：Patch 实例（含 sum_df / acag / patch）以及可复现的缓存清单（manifest）。
+
+        Caching strategy
+        缓存策略
+        ----------------
+        Patch computation is expensive (groupby + dynamic threshold + graph build + BFS).
+        Patch 计算开销较大（聚合 + 动态阈值 + 构图 + BFS 连通分量）。
+        
+        To avoid recomputation, we use a directory-level cache bound to model hash and parameters.
+        为避免重复计算，采用目录级缓存，并绑定 model hash 与参数组合。
+
+        Cache root: data/workspace/{model_hash}/patch_level/angle_{A}_gap_{G}_overlap_{O}/
+        缓存根目录：data/workspace/{model_hash}/patch_level/angle_{A}_gap_{G}_overlap_{O}/
+        
+        A top-level manifest meta_patch_*.json indexes all per-pair subfolders.
+        顶层 manifest（meta_patch_*.json）索引所有 pair 子目录，支持批量加载。
+
+        Integrity / validation
+        完整性 / 校验
+        ----------------------
+        Patch.load(..., validate_hash=True) is used to detect corrupted or partial caches.
+        使用 Patch.load(..., validate_hash=True) 检测缓存是否损坏或写入不完整。
+        
+        If a cache is invalid, the recommended behavior is per-pair fallback recompute.
+        若缓存无效，推荐行为是“按 pair 回退重算”，而不是整批失败。
+
+        Debug visualization
+        调试可视化
+        ------------------
+        show=True enables debug-only visualization after load/build, without altering algorithmic state.
+        show=True 仅用于调试展示（load/build 后可视化），不应改变算法状态与结果。
+
+        Parameters
+        参数
+        ----------
+        pair_level_files : dict[tuple[int,int] | str, str]
+        pair_level_files：对象对 -> feather 文件名 的映射（key 可为 tuple 或 "(i,j)" 字符串）。
+        
+        pair_level_dir : str
+        pair_level_dir：存放 pair-level feather 文件的目录路径。
+
+        show : bool
+        show：是否进行调试可视化展示（仅调试用）。
+
+        Returns
+        返回
+        -------
+        (patch_level_result, output_dir)
+        返回：(patch_level_result, output_dir)
+
+        patch_level_result : dict[tuple[int,int], Patch]
+        patch_level_result：对象对 -> Patch 实例（已加载或已计算）。
+        
+        output_dir : str
+        output_dir：本阶段缓存根目录（与模型 hash 和参数绑定）。
+        """
         import os
         import json
         import pandas as pd
-        from .patch_level import Patch
+
         patch_level_result = {}
+
+        # Workspace binding: cache directory must be tied to model identity to avoid collision.
+        # 工作空间绑定：缓存目录必须与模型身份（hash）绑定，避免不同模型之间缓存冲突。
         hash_str = self.model.hash_id if self.model else "unknown_model"
+
+        # Parameter binding: angle/gap/overlap are part of cache key to avoid mixing incompatible results.
+        # 参数绑定：angle/gap/overlap 属于缓存键的一部分，避免混用不兼容的结果。
         output_dir = os.path.join(
             "data", "workspace", str(hash_str), "patch_level",
             f"angle_{SOFT_NORMAL_GATE_ANGLE}_gap_{MAX_GAP_FACTOR}_overlap_{OVERLAP_RATIO_THRESHOLD}"
         )
+
+        # Manifest file: indexes all pair_{i}_{j} subfolders for this configuration.
+        # 顶层清单文件：索引该配置下所有 pair_{i}_{j} 子目录，支持批量加载。
         filename = (
             f"meta_patch_"
             f"_angle_{SOFT_NORMAL_GATE_ANGLE}"
             f"_gap_{MAX_GAP_FACTOR}"
             f"_overlap_{OVERLAP_RATIO_THRESHOLD}.json"
         )
+
+        # Fast path: bulk load if output_dir and manifest exist.
+        # 快速路径：若缓存目录与 manifest 存在，则直接批量加载。
         if os.path.exists(output_dir):
-            if os.path.exists(os.path.join(output_dir, filename)):
-                with open(os.path.join(output_dir, filename), "r", encoding="utf-8") as f:
+            manifest_path = os.path.join(output_dir, filename)
+            if os.path.exists(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as f:
                     patch_meta = json.load(f)
-                    for obj_pair,sub_meta in patch_meta['pairs'].items():
-                        pair_dir=sub_meta['pair_dir']
-                        patch=Patch.load(root_dir=output_dir,pair_dir=pair_dir,validate_hash=True)
-                        patch_level_result[eval(obj_pair)]=patch
-                    return patch_level_result, output_dir
-        
-        for obj_pair,file_name in tqdm(pair_level_files.items(),desc="build_patch_graph",total=len(pair_level_files),leave=False):
+
+                # Load each cached pair patch by pair_dir.
+                # 逐个按 pair_dir 加载已缓存的 Patch。
+                for obj_pair_str, sub_meta in patch_meta.get("pairs", {}).items():
+                    pair_dir = sub_meta["pair_dir"]
+                    patch = Patch.load(root_dir=output_dir, pair_dir=pair_dir, validate_hash=True)
+
+                    # Optional debug visualization (no algorithmic mutation expected).
+                    # 可选调试可视化（不应改变算法结果）。
+                    if show:
+                        # NOTE: consider using ast.literal_eval to avoid eval risks.
+                        # 注意：建议用 ast.literal_eval 替代 eval，避免潜在风险。
+                        obj1_idx, obj2_idx = eval(obj_pair_str)
+                        obj1 = self.objects[obj1_idx]
+                        obj2 = self.objects[obj2_idx]
+                        patch._debug_show(obj1, obj2)
+
+                    patch_level_result[eval(obj_pair_str)] = patch
+
+                return patch_level_result, output_dir
+
+        # Slow path: compute Patch for each pair from pair-level feather inputs.
+        # 慢速路径：对每个对象对从 pair-level feather 输入计算 Patch，并落盘缓存。
+        for obj_pair, file_name in tqdm(
+            pair_level_files.items(),
+            desc="build_patch_graph",
+            total=len(pair_level_files),
+            leave=False,
+        ):
+            # Legacy compatibility: allow obj_pair to be "(i,j)" string.
+            # 兼容旧格式：允许 obj_pair 是 "(i,j)" 字符串。
             if isinstance(obj_pair, str):
-                obj_pair_str=obj_pair
-                str_elements = obj_pair_str.strip('()').split(',')
+                str_elements = obj_pair.strip("()").split(",")
                 obj_pair = tuple(int(elem.strip()) for elem in str_elements)
 
-            obj1_idx,obj2_idx=obj_pair
-            obj1=self.objects[obj1_idx]
-            obj2=self.objects[obj2_idx]
+            obj1_idx, obj2_idx = obj_pair
+            obj1 = self.objects[obj1_idx]
+            obj2 = self.objects[obj2_idx]
+
+            # Pair-level DataFrame is upstream artifact; Patch decides load-or-compute internally.
+            # pair-level DataFrame 是上游产物；Patch 内部决定 load-or-compute（若支持缓存）。
             file_path = os.path.join(pair_level_dir, file_name)
-            df=pd.read_feather(file_path)
-            from .patch_level import Patch
-            patch=Patch(obj1=obj1,obj2=obj2,df=df,root_dir=output_dir,show=False)
+            df = pd.read_feather(file_path)
+
+            # Build Patch (may compute and save inside Patch depending on cache availability).
+            # 构建 Patch（可能在 Patch 内部完成计算并保存缓存）。
+            patch = Patch(obj1=obj1, obj2=obj2, df=df, root_dir=output_dir, show=show)
             patch_level_result[obj_pair] = patch
-        sub_metas={}
-        for obj_pair,patch in patch_level_result.items():
-            obj1_idx,obj2_idx=obj_pair
-            pair_dir=f"pair_{obj1_idx}_{obj2_idx}"
-            patch.meta['pair_dir']=pair_dir
-            sub_metas[obj_pair]=patch.meta
-        patch_meta={}
-        patch_meta['pairs']={}
-        for obj_pair,sub_meta in sub_metas.items():
-            patch_meta['pairs'][str(obj_pair)]=sub_meta
-        patch_meta['angle']=SOFT_NORMAL_GATE_ANGLE
-        patch_meta['gap']=MAX_GAP_FACTOR
-        patch_meta['overlap']=OVERLAP_RATIO_THRESHOLD
-        patch_meta['path']=output_dir
- 
-        # ⚠️ 建议加 encoding='utf-8'，并 ensure_ascii=False（如果 key/路径有中文更安全）
+
+        # Build top-level manifest for next-run bulk loading.
+        # 构建顶层 manifest，供下次运行时批量加载使用。
+        sub_metas = {}
+        for obj_pair, patch in patch_level_result.items():
+            obj1_idx, obj2_idx = obj_pair
+            pair_dir = f"pair_{obj1_idx}_{obj2_idx}"
+
+            # Store pair_dir into Patch.meta so manifest can locate subfolders quickly.
+            # 把 pair_dir 写入 Patch.meta，使 manifest 能快速定位子目录。
+            patch.meta["pair_dir"] = pair_dir
+            sub_metas[obj_pair] = patch.meta
+
+        patch_meta = {
+            "pairs": {str(obj_pair): sub_meta for obj_pair, sub_meta in sub_metas.items()},
+            "angle": SOFT_NORMAL_GATE_ANGLE,
+            "gap": MAX_GAP_FACTOR,
+            "overlap": OVERLAP_RATIO_THRESHOLD,
+            "path": output_dir,
+        }
+
+        # Persist manifest atomically is recommended for crash-safety.
+        # 建议使用原子写入方式落盘 manifest，以增强崩溃安全性。
+        os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, filename), "w", encoding="utf-8") as f:
             json.dump(patch_meta, f, indent=4, ensure_ascii=False)
-        pass
-        return patch_level_result,output_dir
+
+        return patch_level_result, output_dir
 
     def show(self, visualizer_type: Optional[VisualizerType] = DEFAULT_VISUALIZER_TYPE, **kwargs):
         visualizer = IVisualizer.create(visualizer_type)

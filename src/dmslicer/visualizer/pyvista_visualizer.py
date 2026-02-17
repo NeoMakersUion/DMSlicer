@@ -258,7 +258,7 @@ class PyVistaVisualizer(IVisualizer):
                     tmp_path = tmp.name
                 
                 try:
-                    # Export to GLTF with inline data (single file JSON)
+                    # Export to GLTF with i nline data (single file JSON)
                     self.plotter.export_gltf(tmp_path, inline_data=True)
                     
                     # 2. Read GLTF content
