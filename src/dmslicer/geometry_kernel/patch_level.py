@@ -271,6 +271,7 @@ class Patch:
     patch: Dict[int, List[Dict[str, Any]]]
     sum_df: Dict[int, pd.DataFrame]
     acag: Dict[int, Dict[int, Dict[str, Any]]]  # ACAG: graph -> 邻接曲率面积图（含adj/deg/ddeg/cover_area）
+    # meta
 
     def __init__(self, obj1: "Object", obj2: "Object", df: pd.DataFrame, root_dir: str | None = None, show: bool = False):
         """
@@ -294,17 +295,18 @@ class Patch:
         if root_dir:
             import shutil
             pair_dir_name = f"pair_{obj1.id}_{obj2.id}"
-            base_dir = self._resolve_root_dir(root_dir)
+            base_dir = Patch._resolve_root_dir(root_dir)
             full_pair_path = base_dir / pair_dir_name
             
             # === 步骤2: 尝试从缓存加载 ===
             try:
                 if full_pair_path.exists():
-                    data = self.load(str(base_dir), pair_dir_name)
-                    self.sum_df = data["sum_df"]
-                    self.acag = data["acag"]  # ACAG: graph -> ACAG 邻接曲率面积图，替换原因：统一内部命名
-                    self.patch = data["patch"]
-                    self.hash_id = data["meta"].get("hash_id")
+                    loaded_patch = Patch.load(str(base_dir), pair_dir_name)
+                    self.sum_df = loaded_patch.sum_df
+                    self.acag = loaded_patch.acag
+                    self.patch = loaded_patch.patch
+                    self.hash_id = loaded_patch.gen_hash_id()
+                    self.meta = getattr(loaded_patch, "meta", {})
                     loaded = True
             except Exception:
                 # Load failed (corrupt files, missing meta, etc.)
@@ -333,12 +335,11 @@ class Patch:
                 g2 = build_patch_graph(obj2, tri2, df, tri_col="tri2")
                 self.acag = {obj1.id: g1, obj2.id: g2}  # ACAG: graph -> ACAG 邻接曲率面积图，替换原因：突出邻接与曲率面积属性
                 self.patch = self.component_detect(g1, g2)
-                safe_state = self._normalize_for_hash([self.sum_df, self.acag, self.patch])
-                self.hash_id = calculate_hash(safe_state)
-            
             # === 步骤4: 保存结果到缓存（如需） ===
             if root_dir:
-                self.save(str(base_dir))
+                self.meta=self.save(str(base_dir))
+            else:
+                self.hash_id=self.gen_hash_id()
 
         if show == True:
             self._debug_show(obj1, obj2)
@@ -381,24 +382,12 @@ class Patch:
             return self._normalize_for_hash(obj.tolist())
         return obj
 
-    def __hash__(self) -> int:
-        """
-        获取当前实例的哈希值。
-        
-        NOTE: 这里直接返回预计算的 `hash_id`（如果是 int 类型则需要转换，但目前 hash_id 是 str，
-        标准 __hash__ 应返回 int。此实现可能与标准语义有出入，主要用于内部标识）。
-        """
-        # Return the pre-computed hash_id if available
-        if getattr(self, "hash_id", None):
-            # 尝试将 hex string 转为 int，截断以适应系统 hash 宽度
-            try:
-                return int(self.hash_id, 16)
-            except ValueError:
-                return hash(self.hash_id)
-        # Fallback (though init should guarantee hash_id is set)
-        return 0 
+    def gen_hash_id(self):
+        from ..tools.hash_utils import compute_content_hash
+        return compute_content_hash(self.sum_df, self.acag, self.patch)
 
-    def _resolve_root_dir(self, root_dir: str) -> Path:
+    @staticmethod
+    def _resolve_root_dir(root_dir: str | None) -> Path:
         from ..file_parser.workspace_utils import get_workspace_dir
         workspace_dir = get_workspace_dir().resolve()
         if not root_dir:
@@ -419,7 +408,14 @@ class Patch:
         except ValueError:
             return (workspace_dir / norm_path).resolve()
 
-    def save(self, root_dir: str, *, params: dict | None = None, policy_version: str | None = None) -> dict:
+    def save(
+        self,
+        root_dir: str,
+        *,
+        params: dict | None = None,
+        policy_version: str | None = None,
+        validate_after_save: bool = True,
+    ) -> dict:
         """
         Save Patch artifacts to disk.
 
@@ -507,15 +503,6 @@ class Patch:
                 data = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
                 _atomic_write_bytes(path.with_suffix(".pkl"), data)
 
-        # ---------- compute hash id (rename your __hash__) ----------
-        if not getattr(self, "hash_id", None):
-            # 这里建议你把 __hash__ 改名 compute_hash_id
-            # 先兼容你当前写法
-            try:
-                self.__hash__()  # you should replace this with self.compute_hash_id()
-            except Exception:
-                pass
-
         obj1_id, obj2_id = self.obj_pair
         base_dir = self._resolve_root_dir(root_dir)
         pair_dir = base_dir / f"pair_{obj1_id}_{obj2_id}"
@@ -523,6 +510,7 @@ class Patch:
 
         # ---------- save summaries ----------
         sum_dir = pair_dir / "sum_df"
+        sum_df_saved: Dict[int, pd.DataFrame] = {}
         for obj_id, sdf in self.sum_df.items():
             # Convert dict keys in 'adj_obj_tri_evaluation' to str for Parquet compatibility
             # Use a copy to avoid mutating the in-memory dataframe
@@ -531,25 +519,53 @@ class Patch:
                 sdf_save["adj_obj_tri_evaluation"] = sdf_save["adj_obj_tri_evaluation"].apply(
                     lambda d: {str(k): v for k, v in d.items()} if isinstance(d, dict) else d
                 )
-            _save_parquet_atomic(sdf_save, sum_dir / f"sum_df_{obj_id}.parquet")
+            file_name=f"sum_df_{obj_id}.parquet"
+            sum_df_saved[int(obj_id)] = file_name
+            _save_parquet_atomic(sdf_save, sum_dir / file_name)
 
         # ---------- save ACAG (AdjacencyCurvatureAreaGraph) ----------
         acag_dir = pair_dir / "acag"
+        acag_saved: Dict[int, Dict[int, Any]] = {}
         for obj_id, g in self.acag.items():
-            _acag_to_csr_npz(g, acag_dir / f"acag_{obj_id}.npz")
+            file_name=f"acag_{obj_id}.npz"
+            acag_saved[int(obj_id)] = file_name
+            _acag_to_csr_npz(g, acag_dir / file_name)
 
         # ---------- save patch (raw structure) ----------
         # NOTE: raw nested dict is not stable for long-term; but msgpack/pickle at least keeps int keys.
         patch_dir = pair_dir / "patch"
+        patch_saved: Dict[int, Dict[int, Any]] = {}
         for obj_id, p in self.patch.items():
-            _save_msgpack_atomic(p, patch_dir / f"patch_{obj_id}.msgpack")
+            file_name=f"patch_{obj_id}.msgpack"
+            patch_saved[int(obj_id)] = file_name
+            _save_msgpack_atomic(p, patch_dir / file_name)
 
-        # Removed _raw_g_pair saving logic as it is redundant with graph
+        # Load Saved Files
+        from ..tools.hash_utils import compute_content_hash
+        sum_df = {}
+        # sum_file already contains "sum_df/" prefix
+        for obj_id, sum_file in tqdm(sum_df_saved.items(), total=len(sum_df_saved), desc="Loading sum_df",leave=False):
+            sum_df[int(obj_id)] = pd.read_parquet(sum_dir / sum_file)
+
+        # ---------- Load ACAG (AdjacencyCurvatureAreaGraph) ----------
+        acag = {}
+        # acag_file already contains "acag/" or legacy \"graph/\" prefix
+        for obj_id, acag_file in tqdm(acag_saved.items(), total=len(acag_saved), desc="Loading acag",leave=False):
+            acag[int(obj_id)] = Patch._load_acag(acag_dir / acag_file)
+
+        # ---------- Load patches ----------
+        patch = {}
+        # patch_file already contains "patch/" prefix
+        for obj_id, patch_file in tqdm(patch_saved.items(), total=len(patch_saved), desc="Loading patch",leave=False):
+            patch[int(obj_id)] = Patch._load_patch(patch_dir / patch_file)
+        content_hash = compute_content_hash(sum_df, acag, patch)
 
         # ---------- meta / manifest ----------
+
+        self.hash_id = content_hash
         meta = {
             "obj_pair": [int(obj1_id), int(obj2_id)],
-            "hash_id": getattr(self, "hash_id", None),
+            "hash_id": content_hash,
             "created_at_unix": int(time.time()),
             "params": params or {},
             "policy_version": policy_version,
@@ -563,7 +579,8 @@ class Patch:
         return meta
 
             
-    def load(self, root_dir: str, pair_dir: str):
+    @staticmethod
+    def load(root_dir: str, pair_dir: str,validate_hash: bool = False) -> "Patch":
         """
         Load Patch artifacts from disk.
 
@@ -572,19 +589,19 @@ class Patch:
         
         :param root_dir: 基础目录路径，解析规则与 save 方法一致。
         :param pair_dir: 具体的配对目录名，例如 `pair_10_20`
-        :return: 包含加载数据的字典 {sum_df, graph, patch, meta}
+        :return: 完整初始化后的 Patch 实例
         
         :raises FileNotFoundError: 如果 meta.json 不存在
         :raises ValueError: 如果加载的数据结构不符合预期（由底层 pandas/numpy 抛出）
         """
         import json
         import pandas as pd
+        from tqdm import tqdm
         import numpy as np
-        base_dir = self._resolve_root_dir(root_dir)
+        base_dir = Patch._resolve_root_dir(root_dir)
         pair_dir_path = base_dir / pair_dir
 
-        # ---------- Check for metadata ----------
-        meta_file = pair_dir_path / "meta.json"
+        meta_file=pair_dir_path / "meta.json"
         if not meta_file.exists():
             raise FileNotFoundError(f"Meta file not found at {meta_file}")
 
@@ -593,45 +610,100 @@ class Patch:
             meta = json.load(f)
 
         # Retrieve hash_id from meta to verify data integrity
-        stored_hash = meta["hash_id"]
-        # Optional: Validate hash if needed, or use stored_hash for reference
-        # Example: assert stored_hash == self.hash_id  # This could be optional for load verification
+        stored_hash = meta.get("hash_id")
 
         # Retrieve files from meta
         sum_df_files = meta["files"]["sum_df"]
         # 优先使用 ACAG 字段，兼容旧版本的 graph 字段
-        acag_files = meta["files"].get("acag") or meta["files"].get("graph")
+        acag_files = meta["files"].get("acag")
         patch_files = meta["files"]["patch"]
 
         # ---------- Load summaries (sum_df) ----------
         sum_df = {}
         # sum_file already contains "sum_df/" prefix
-        for obj_id, sum_file in sum_df_files.items():
+        for obj_id, sum_file in tqdm(sum_df_files.items(), total=len(sum_df_files), desc="Loading sum_df",leave=False):
             sum_df[int(obj_id)] = pd.read_parquet(pair_dir_path / sum_file)
 
         # ---------- Load ACAG (AdjacencyCurvatureAreaGraph) ----------
         acag = {}
         # acag_file already contains "acag/" or legacy \"graph/\" prefix
-        for obj_id, acag_file in acag_files.items():
-            acag[int(obj_id)] = self._load_graph(pair_dir_path / acag_file)
+        for obj_id, acag_file in tqdm(acag_files.items(), total=len(acag_files), desc="Loading acag",leave=False):
+            acag[int(obj_id)] = Patch._load_acag(pair_dir_path / acag_file)
 
         # ---------- Load patches ----------
         patch = {}
         # patch_file already contains "patch/" prefix
-        for obj_id, patch_file in patch_files.items():
-            patch[int(obj_id)] = self._load_patch(pair_dir_path / patch_file)
+        for obj_id, patch_file in tqdm(patch_files.items(), total=len(patch_files), desc="Loading patch",leave=False):
+            patch[int(obj_id)] = Patch._load_patch(pair_dir_path / patch_file)
 
         # Removed _raw_g_pair loading logic as it is redundant with graph
+        # ---------- Check for metadata ----------
+        meta_file = pair_dir_path / "meta.json"
+        if not meta_file.exists():
+            raise FileNotFoundError(f"Meta file not found at {meta_file}")
+        obj_pair_raw = meta.get("obj_pair", [])
+        if isinstance(obj_pair_raw, (list, tuple)) and len(obj_pair_raw) == 2:
+            obj_pair = (int(obj_pair_raw[0]), int(obj_pair_raw[1]))
+        else:
+            obj_pair = (0, 1)
 
-        # Return the loaded data
-        return {
-            "sum_df": sum_df,
-            "acag": acag,
-            "patch": patch,
-            "meta": meta
+        patch_obj = Patch.__new__(Patch)
+        patch_obj.df = pd.DataFrame()
+        patch_obj.obj_pair = obj_pair
+        patch_obj.sum_df = sum_df
+        patch_obj.acag = acag
+        patch_obj.patch = patch
+        patch_obj.meta = meta
+        patch_obj.hash_id = patch_obj.gen_hash_id()
+        if validate_hash and stored_hash and stored_hash != patch_obj.hash_id:
+            debug_dir = pair_dir_path / "hash_mismatch_debug"
+            Patch._dump_hash_mismatch_debug(
+                debug_dir=debug_dir,
+                meta=meta,
+                stored_hash=str(stored_hash),
+                computed_hash=str(patch_obj.hash_id),
+                sum_df=patch_obj.sum_df,
+                acag=patch_obj.acag,
+                patch=patch_obj.patch,
+            )
+            raise ValueError(f"Hash ID mismatch on load: meta={stored_hash} computed={patch_obj.hash_id} debug_dir={debug_dir}")
+        return patch_obj
+
+    @staticmethod
+    def _dump_hash_mismatch_debug(
+        *,
+        debug_dir: Path,
+        meta: dict,
+        stored_hash: str,
+        computed_hash: str,
+        sum_df: Dict[int, Any],
+        acag: Dict[int, Any],
+        patch: Dict[int, Any],
+    ) -> None:
+        import json
+        import platform
+        import sys
+        from ..tools.hash_utils import build_content_hash_payload, stable_json_dumps_bytes
+
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        env = {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "stored_hash": stored_hash,
+            "computed_hash": computed_hash,
         }
 
-    def _load_graph(self, path: Path):
+        (debug_dir / "env.json").write_text(json.dumps(env, ensure_ascii=False, indent=2), encoding="utf-8")
+        (debug_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        payload = build_content_hash_payload(sum_df, acag, patch)
+        payload_bytes = stable_json_dumps_bytes(payload)
+        (debug_dir / "payload.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        (debug_dir / "payload.bin").write_bytes(payload_bytes)
+        (debug_dir / "payload.hex.txt").write_text(payload_bytes.hex(), encoding="utf-8")
+
+    @staticmethod
+    def _load_acag(path: Path) -> Dict[int, Dict[str, Any]]:
         """
         Load the graph from a CSR npz format with pickled properties.
         
@@ -654,7 +726,7 @@ class Patch:
             if props_arr.size > 0:
                 props = props_arr[0]
 
-        graph = {}
+        graph: Dict[int, Dict[str, Any]] = {}
         for i, node in enumerate(nodes):
             start, end = indptr[i], indptr[i+1]
             adj = indices[start:end].astype(int).tolist()
@@ -664,7 +736,8 @@ class Patch:
             graph[int(node)] = elem
         return graph
 
-    def _load_patch(self, path: Path):
+    @staticmethod
+    def _load_patch(path: Path) -> Any:
         """
         Load the patch from a msgpack or pickle file.
         

@@ -78,8 +78,8 @@ class Geom:
         self.__hash__()
         
         if self._load_from_cache():
-            res,pair_level_dir=self.__build_object_contact_triangles()
-            res,patch_level_dir=self.__build_object_contact_patch_level(res,pair_level_dir)
+            pair_level_files,pair_level_dir=self.__build_object_contact_triangles()
+            patch_level_result,patch_level_dir=self.__build_object_contact_patch_level(pair_level_files,pair_level_dir)
             return
         # Try to load from cache
 
@@ -88,7 +88,7 @@ class Geom:
         self.__sort__()
         self.__build_object_contact_graph()
         self._save_to_cache()
-        res,output_dir=self.__build_object_contact_triangles()
+        pair_level_files,pair_level_dir=self.__build_object_contact_triangles()
         # 
         # Save to cache
         # self.show()
@@ -640,17 +640,34 @@ class Geom:
         return pair_level_result, output_dir
 
  
-    def __build_object_contact_patch_level(self,res,pair_level_dir):
+    def __build_object_contact_patch_level(self,pair_level_files,pair_level_dir):
         import os
+        import json
         import pandas as pd
+        from .patch_level import Patch
+        patch_level_result = {}
         hash_str = self.model.hash_id if self.model else "unknown_model"
         output_dir = os.path.join(
             "data", "workspace", str(hash_str), "patch_level",
             f"angle_{SOFT_NORMAL_GATE_ANGLE}_gap_{MAX_GAP_FACTOR}_overlap_{OVERLAP_RATIO_THRESHOLD}"
         )
+        filename = (
+            f"meta_patch_"
+            f"_angle_{SOFT_NORMAL_GATE_ANGLE}"
+            f"_gap_{MAX_GAP_FACTOR}"
+            f"_overlap_{OVERLAP_RATIO_THRESHOLD}.json"
+        )
+        if os.path.exists(output_dir):
+            if os.path.exists(os.path.join(output_dir, filename)):
+                with open(os.path.join(output_dir, filename), "r", encoding="utf-8") as f:
+                    patch_meta = json.load(f)
+                    for obj_pair,sub_meta in patch_meta['pairs'].items():
+                        pair_dir=sub_meta['pair_dir']
+                        patch=Patch.load(root_dir=output_dir,pair_dir=pair_dir,validate_hash=True)
+                        patch_level_result[eval(obj_pair)]=patch
+                    return patch_level_result, output_dir
         
-        patch_level_result = {}
-        for obj_pair,file_name in tqdm(res.items(),desc="build_patch_graph",total=len(res),leave=False):
+        for obj_pair,file_name in tqdm(pair_level_files.items(),desc="build_patch_graph",total=len(pair_level_files),leave=False):
             if isinstance(obj_pair, str):
                 obj_pair_str=obj_pair
                 str_elements = obj_pair_str.strip('()').split(',')
@@ -664,19 +681,25 @@ class Geom:
             from .patch_level import Patch
             patch=Patch(obj1=obj1,obj2=obj2,df=df,root_dir=output_dir,show=False)
             patch_level_result[obj_pair] = patch
-        for obj_pair,data in patch_level_result.items():
+        sub_metas={}
+        for obj_pair,patch in patch_level_result.items():
             obj1_idx,obj2_idx=obj_pair
-            filename = (
-                f"patch_level_result_",
-                f"{obj1_idx}_{obj2_idx}",
-                f"_angle_{SOFT_NORMAL_GATE_ANGLE}"
-                f"_gap_{MAX_GAP_FACTOR}"
-                f"_overlap_{OVERLAP_RATIO_THRESHOLD}.json"
-            )
-            # ⚠️ 建议加 encoding='utf-8'，并 ensure_ascii=False（如果 key/路径有中文更安全）
-            with open(os.path.join(output_dir, filename), "w") as f:
-                json.dump(pair_level_result, f, indent=4)            
-            pass
+            pair_dir=f"pair_{obj1_idx}_{obj2_idx}"
+            patch.meta['pair_dir']=pair_dir
+            sub_metas[obj_pair]=patch.meta
+        patch_meta={}
+        patch_meta['pairs']={}
+        for obj_pair,sub_meta in sub_metas.items():
+            patch_meta['pairs'][str(obj_pair)]=sub_meta
+        patch_meta['angle']=SOFT_NORMAL_GATE_ANGLE
+        patch_meta['gap']=MAX_GAP_FACTOR
+        patch_meta['overlap']=OVERLAP_RATIO_THRESHOLD
+        patch_meta['path']=output_dir
+ 
+        # ⚠️ 建议加 encoding='utf-8'，并 ensure_ascii=False（如果 key/路径有中文更安全）
+        with open(os.path.join(output_dir, filename), "w", encoding="utf-8") as f:
+            json.dump(patch_meta, f, indent=4, ensure_ascii=False)
+        pass
         return patch_level_result,output_dir
 
     def show(self, visualizer_type: Optional[VisualizerType] = DEFAULT_VISUALIZER_TYPE, **kwargs):

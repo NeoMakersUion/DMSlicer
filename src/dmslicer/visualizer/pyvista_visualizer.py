@@ -1,5 +1,7 @@
 # pyvista_visualizer.py
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 try:
     import pyvista as pv
 except ImportError:
@@ -94,7 +96,7 @@ class PyVistaVisualizer(IVisualizer):
         self.plotter=visualize_vertices_and_triangles(tri.vertices,triangle,plotter=self.plotter,color=color,opacity=opacity)
     def add(
         self,
-        obj: Union[MeshData,"Geom", pv.PolyData],
+        obj: Union[MeshData, "Geom", Any],
         opacity: float = 0.5,
         **kwargs
     ):
@@ -133,7 +135,7 @@ class PyVistaVisualizer(IVisualizer):
 
                 
 
-        elif isinstance(obj, pv.PolyData):
+        elif pv is not None and isinstance(obj, pv.PolyData):
             triangles = obj.faces.reshape(-1, 4)[:, 1:]
         else:
             raise ValueError("mesh must be either MeshData,Object or pv.PolyData")
