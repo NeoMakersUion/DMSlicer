@@ -856,6 +856,7 @@ class Patch:
                 self.patch = {obj1.id: [], obj2.id: []}
                 self.sum_df = {}
                 self.acag = {}
+                return
             else:
                 # 2.1 Summaries / 摘要统计
                 s1 = create_summary(df_true, "tri1", "cover1", "tri2", obj1)

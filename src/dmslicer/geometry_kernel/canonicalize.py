@@ -1633,7 +1633,8 @@ class Geom:
             # Patch 作为每个对象对缓存目录的所有者：
             #   {output_dir}/pair_{obj1}_{obj2}/...
             patch = Patch(obj1=obj1, obj2=obj2, df=df, root_dir=output_dir, show=show)
-            patch_level_result[obj_pair] = patch
+            if hasattr(patch,"meta"):
+                patch_level_result[obj_pair] = patch
 
         # ============================================================
         # Build and persist top-level manifest for next-run bulk loading
@@ -1646,6 +1647,7 @@ class Geom:
 
             # Store pair_dir into patch.meta so manifest can locate subfolders quickly.
             # 把 pair_dir 写入 patch.meta，使 manifest 能快速定位子目录
+            
             patch.meta["pair_dir"] = pair_dir
             sub_metas[obj_pair] = patch.meta
 
