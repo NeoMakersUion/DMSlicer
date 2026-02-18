@@ -3,6 +3,9 @@
 Patch Level Module (ACAG + Components + Cache)  
 Patch 层模块（ACAG + 连通组件 + 缓存）
 
+Author//作者: QilongJiang
+Date//日期: 2026-02-11
+
 This module builds patch-level artifacts for a pair of mesh objects (obj1, obj2) from pair-level triangle interaction statistics (DataFrame).  
 本模块基于 pair-level 三角面片交互统计（DataFrame），为一对网格对象（obj1, obj2）构建 patch-level 产物。
 
