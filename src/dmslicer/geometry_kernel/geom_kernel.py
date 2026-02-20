@@ -26,7 +26,7 @@ from ..file_parser.model import Model
 from .canonicalize import Geom
 from .topology3d import Topology3D
 from .spatial_index import SpatialIndex
-
+from typing import Optional
 from .config import GEOM_ACC
 from ..visualizer.visualizer_interface import IVisualizer
 class GeometryKernel:
@@ -57,7 +57,7 @@ class GeometryKernel:
         # Step 1: normalize all meshes into one global mesh
         self._build_pair_level_patch_mapping()
         pass
-
+        
     def _build_pair_level_patch_mapping(self) -> None:
         """
         Build object-level adjacency graph and per-pair component mappings.

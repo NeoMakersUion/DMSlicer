@@ -1,0 +1,16 @@
+name: dmslicer-pyvista-streamlit
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy>=1.24
+  - pyvista=0.47.0
+  - vtk
+  - streamlit=1.54.0
+  - panel>=1.4.1
+  - requests>=2.31
+  - pytest>=8.2
+  - pip:
+      - playwright>=1.49
