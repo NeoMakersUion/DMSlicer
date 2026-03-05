@@ -54,6 +54,8 @@ class GeometryKernel:
         """
         self.acc=acc
         self.geom = Geom(model,acc)
+        self.graph=None
+        self.patch=None
         # Step 1: normalize all meshes into one global mesh
         self._build_pair_level_patch_mapping()
         pass
@@ -82,11 +84,12 @@ class GeometryKernel:
             if node2 not in graph:
                 graph[node2] = set()
             graph[node2].add(node1)
+        self.graph = graph
         self.geom.graph = graph
-
         # Flatten per-object patch components into per-pair component mappings.
         # 将按对象存储的组件列表展平为每个对象对的一组组件配对结果。
         tmp = {pair: elem.patch for pair, elem in self.geom.patch_info.items()}
+        self.patch={}
         self.geom.patch={}
         for pair, patch_dict in tmp.items():
             obj1_idx, obj2_idx = pair
@@ -97,7 +100,8 @@ class GeometryKernel:
                 obj2_comp_idx = patch_dict[obj1_idx][obj1_comp_idx]["adj"][0]
                 comp2 = patch_dict[obj2_idx][obj2_comp_idx]["component"]
                 result.append({obj1_idx: comp1, obj2_idx: comp2})
-            self.geom.patch[pair] = result
+            self.geom.patch[pair]=result
+            self.patch[pair] = result
             
     def visualize_obj(self,lst,visualizer:IVisualizer=None,opacity:float=0.5):
         show=False
