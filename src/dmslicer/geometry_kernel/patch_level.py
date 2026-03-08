@@ -667,7 +667,7 @@ def validate_patch_with_dynamic_threshold(
     df1_out["main_evaluation"] = df1_out["cover_sum"] > df1_out["threshold"]
     df2_out["main_evaluation"] = df2_out["cover_sum"] > df2_out["threshold"]
 
-    # -------------------------------------------------------------
+    # -------------------------------------------------------------df1_out["threshold"]
     # 4) Build lookup maps / 构造 tri_id -> main_evaluation 的快速映射
     # -------------------------------------------------------------
     # Used for adjacency promotion rule.
