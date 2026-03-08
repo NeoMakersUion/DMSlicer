@@ -23,5 +23,7 @@ DEFAULTS: Dict[str, Any] = {
     "MAX_GAP_FACTOR": 0.5,        # β | ε_max = β · h (最大容差比例)
                                 # 命名逻辑: "初始/最大" + "间隙" + "比例因子"
                                 # ✅ 避免使用 magic number 10 (β/α)
-    "OVERLAP_RATIO_THRESHOLD": 0.01  # γ | 重叠区域占比阈值 (默认 0.5)
+    "OVERLAP_RATIO_THRESHOLD": 0.01,  # γ | 重叠区域占比阈值 (默认 0.5)
+    # 输出的设定,通常默认是终端输出
+    "OUTPUT_TO_TERMINAL": "terminal"  # 是否将结果输出到终端 (默认 "terminal",还可以是"streamlit")
 }
