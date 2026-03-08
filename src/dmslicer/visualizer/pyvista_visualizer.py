@@ -34,7 +34,7 @@ class PyVistaVisualizer(IVisualizer):
         except Exception as e:
             # Fallback or re-raise depending on policy. Here we re-raise to let caller handle it.
             raise RuntimeError(f"Failed to initialize PyVista Plotter: {e}")
-    def addObject(self,geom:"Geom",object:"Object",triangles_ids=None,opacity:float=0.5,color=None):
+    def addObject(self,geom:"Geom",object:"Object",triangles_ids=None,opacity:float=0.5,color=None,label=None):
         """
         Add object to PyVista plotter.
         """
@@ -50,8 +50,8 @@ class PyVistaVisualizer(IVisualizer):
              return
 
         triangles=geom.triangles[triangles_ids]
-        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity)
-    def addTriangle(self,triangle: Any,opacity:float=0.5,color=None):
+        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity,label=label)
+    def addTriangle(self,triangle: Any,opacity:float=0.5,color=None,label=None):
         """
         Add triangle to PyVista plotter.
         """
@@ -59,9 +59,9 @@ class PyVistaVisualizer(IVisualizer):
             color="red"
         vertices=triangle.vertices.astype(np.float32)
         triangles=np.array([[0,1,2]])
-        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity)
+        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity,label=label)
     
-    def addObj(self,object:"Object",include_triangles_ids=None,exclude_triangles_ids=None,opacity:float=0.5,color=None):
+    def addObj(self,object:"Object",include_triangles_ids=None,exclude_triangles_ids=None,opacity:float=0.5,color=None,label=None):
         """
         Add object to PyVista plotter.
         """
@@ -87,17 +87,18 @@ class PyVistaVisualizer(IVisualizer):
                     continue
                 triangles_ids.remove(tri_id)
         triangles=object.tri_id2vert_id[np.array(triangles_ids)]
-        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity)
-    def addTri(self,tri:"Tri",opacity:float=0.5,color="red"):
+        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity,label=label)
+    def addTri(self,tri:"Tri",opacity:float=0.5,color="red",label=None):
         """
         Add triangle to PyVista plotter.
         """
         triangle=np.array([[0,1,2]])
-        self.plotter=visualize_vertices_and_triangles(tri.vertices,triangle,plotter=self.plotter,color=color,opacity=opacity)
+        self.plotter=visualize_vertices_and_triangles(tri.vertices,triangle,plotter=self.plotter,color=color,opacity=opacity,label=label)
     def add(
         self,
         obj: Union[MeshData, "Geom", Any],
         opacity: float = 0.5,
+        label=None,
         **kwargs
     ):
         """
@@ -110,7 +111,7 @@ class PyVistaVisualizer(IVisualizer):
             triangles=mesh.triangles
             vertices=mesh.vertices
             opacity=kwargs.get("opacity",opacity)
-            self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=mesh.color_tuple,opacity=opacity)
+            self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=mesh.color_tuple,opacity=opacity,label=label)
         elif hasattr(obj, 'objects') and hasattr(obj, 'vertices'):  # Duck typing for Geom
             geom=obj
             object_list= kwargs.get("object_list",[])
@@ -193,7 +194,9 @@ class PyVistaVisualizer(IVisualizer):
             self.plotter.show(**kwargs)
         except Exception as e:
             print(f"Warning: Failed to display 3D model. Details: {e}")
-
+    def add_legend(self,labels,size):
+        self.plotter.add_legend(labels=labels,size=size)
+        
     def save(self, file_path: str = None, name: str = None, **kwargs):
         """
         Save the PyVista plot to a file.
@@ -349,7 +352,8 @@ def visualize_vertices_and_triangles(
     show_edges=True,  # 显示三角面的边（方便看网格结构）
     edge_color="black",  # 边的颜色
     opacity=0.8,  # 透明度（0-1，1不透明）
-    smooth_shading=True  # 平滑着色，更美观):
+    smooth_shading=True,  # 平滑着色，更美观):
+    label:Optional[str]=None
     ):
     """
     Visualize vertices and triangles using PyVista.
@@ -367,14 +371,25 @@ def visualize_vertices_and_triangles(
         no_return=True
         plotter = pv.Plotter(window_size=(1200, 800))
     # 添加网格：设置颜色、显示边、透明度
-    plotter.add_mesh(
-        mesh,
-        color=color,  # 浅蓝色（也可以用RGB：color=[0.4, 0.7, 1.0]）
-        show_edges=show_edges,  # 显示三角面的边（方便看网格结构）
-        edge_color=edge_color,  # 边的颜色
-        opacity=opacity,  # 透明度（0-1，1不透明）
-        smooth_shading=smooth_shading  # 平滑着色，更美观
-    )
+    if label is None:
+        plotter.add_mesh(
+            mesh,
+            color=color,  # 浅蓝色（也可以用RGB：color=[0.4, 0.7, 1.0]）
+            show_edges=show_edges,  # 显示三角面的边（方便看网格结构）
+            edge_color=edge_color,  # 边的颜色
+            opacity=opacity,  # 透明度（0-1，1不透明）
+            smooth_shading=smooth_shading  # 平滑着色，更美观
+        )
+    else:
+        plotter.add_mesh(
+            mesh,
+            color=color,  # 浅蓝色（也可以用RGB：color=[0.4, 0.7, 1.0]）
+            show_edges=show_edges,  # 显示三角面的边（方便看网格结构）
+            edge_color=edge_color,  # 边的颜色
+            opacity=opacity,  # 透明度（0-1，1不透明）
+            smooth_shading=smooth_shading,  # 平滑着色，更美观
+            label=label
+        )
     # 添加坐标轴、网格背景
     if no_return is True:
         plotter.add_axes()  # 显示xyz坐标轴
@@ -392,7 +407,8 @@ def visualize_local_tris(
     show_edges=True,  # 显示三角面的边（方便看网格结构）
     edge_color="black",  # 边的颜色
     opacity=0.8,  # 透明度（0-1，1不透明）
-    smooth_shading=True  # 平滑着色，更美观):
+    smooth_shading=True,  # 平滑着色，更美观):
+    label:Optional[str]=None
     ):
     """
     Visualize vertices and triangles using PyVista.
@@ -412,6 +428,7 @@ def visualize_local_tris(
             show_edges=show_edges,
             edge_color=edge_color,
             opacity=opacity,
-            smooth_shading=smooth_shading
+            smooth_shading=smooth_shading,
+            label=label
         )
     return plotter
