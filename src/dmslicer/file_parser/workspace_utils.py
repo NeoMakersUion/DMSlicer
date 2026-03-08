@@ -3,12 +3,42 @@ import os
 from pathlib import Path
 from typing import Union, Optional, Tuple
 
-def sha256_of_file(filepath):
+def sha256_of_file(file_input: Union[str, Path, object]) -> str:
+    """
+    计算指定文件的 SHA-256 哈希值。
+    支持文件路径字符串、Path 对象或类文件对象（如 Streamlit UploadedFile）。
+
+    Args:
+        file_input (Union[str, Path, object]): 文件路径或类文件对象。
+
+    Returns:
+        str: 文件的 SHA-256 哈希值的十六进制字符串表示。
+    """
     sha256_hash = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        # 逐块读取文件，适用于大文件
+
+    def read_chunks(f):
         for chunk in iter(lambda: f.read(4096), b""):
             sha256_hash.update(chunk)
+
+    if isinstance(file_input, (str, Path)):
+        with open(file_input, "rb") as f:
+            read_chunks(f)
+    else:
+        # 针对类文件对象（如 UploadedFile, BytesIO）
+        # 1. 尝试使用 seek/tell 机制安全读取
+        if hasattr(file_input, "tell") and hasattr(file_input, "seek"):
+            try:
+                original_pos = file_input.tell()
+                file_input.seek(0)
+                read_chunks(file_input)
+                file_input.seek(original_pos)
+            except Exception:
+                # 如果 seek 失败（某些特殊流），尝试直接读取
+                read_chunks(file_input)
+        else:
+            # 2. 如果不支持 seek/tell，直接读取（流被消费）
+            read_chunks(file_input)
+
     return sha256_hash.hexdigest()
 
 
