@@ -163,8 +163,22 @@ def read_amf_objects(
 
         model = Model()
         model.hash_id = sha256_hash
-        with open(uploaded_file, "r", encoding="utf-8") as f:
-            xml_content = f.read()
+        
+        # 处理不同的输入类型：路径字符串 或 类文件对象
+        if isinstance(uploaded_file, (str, Path)):
+            with open(uploaded_file, "r", encoding="utf-8") as f:
+                xml_content = f.read()
+        else:
+            # 假设是类文件对象（如 Streamlit UploadedFile），读取字节并解码
+            # 注意：uploaded_file.read() 返回 bytes，需要解码为 str
+            if hasattr(uploaded_file, "seek"):
+                uploaded_file.seek(0)
+            content_bytes = uploaded_file.read()
+            if isinstance(content_bytes, bytes):
+                xml_content = content_bytes.decode("utf-8")
+            else:
+                xml_content = content_bytes
+
         xml_content = xml_content.replace("amf:", "").replace("ns:", "").replace(":", "")
         root = ET.fromstring(xml_content)
     except FileNotFoundError:
@@ -176,7 +190,7 @@ def read_amf_objects(
 
     objects_xml = root.findall(".//object")
     for index, obj_xml in enumerate(
-        tqdm(objects_xml, desc="AMF objects", unit="obj", disable=not progress)
+        tqdm(objects_xml, desc="AMF objects", unit="obj", leave=True)
     ):
         try:
             vertices = _read_vertices(obj_xml, progress, index)
