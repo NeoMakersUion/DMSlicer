@@ -1,11 +1,16 @@
 from abc import ABCMeta,abstractmethod
 from typing import List,Dict,Optional
 import logging
+from ..geometry_kernel.geom_kernel import GeometryKernel
+from ..geometry_kernel.object_model import Object
 try:
     from .composition import ConstantComposition,GradientComposition
 except ImportError:
     from composition import ConstantComposition,GradientComposition
 
+from ..geometry_kernel.geom_kernel import GeometryKernel
+
+from dmslicer.visualizer.visualizer_interface import IVisualizer
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -13,19 +18,68 @@ logging.basicConfig(
 logger=logging.getLogger(__name__)
 
 
+class Adj_checker():
+    def __init__(self,center_obj,include_obj_list,exclude_obj_list):
+        self.center_obj=center_obj
+        self.include_obj_list=include_obj_list
+        self.exclude_obj_list=exclude_obj_list
+
+def input_obj_index_list_input(mark="include",
+                                protential_objs_list=None,
+                                input_obj_index_list=None):
+    if input_obj_index_list==None:
+        input_obj_index_list=[]
+        input_include_obj_id=None
+        while protential_objs_list!=[] and input_include_obj_id!="q":
+            print(f"\n\n please input the {mark} object index in {protential_objs_list},"\
+                    "\n press 'q' to stop," \
+                  f"\n press 'd' to add default list {protential_objs_list} to {mark} object list",\
+                    "\n default value is 'd'")
+            input_include_obj_id=input("Please input,you can input a single index ,e.g idx ,or a list of indices,e.g. [idx1,idx2],:")or"d"
+            try:
+                input_include_obj_id=eval(input_include_obj_id)
+                protential_objs_list.remove(input_include_obj_id)
+                input_obj_index_list.append(input_include_obj_id)
+            except :
+                if isinstance(input_include_obj_id,list):
+                    for item in input_include_obj_id:
+                        protential_objs_list.remove(item)
+                        input_obj_index_list.append(item)
+                elif isinstance(input_include_obj_id,str):
+                    input_include_obj_id=input_include_obj_id.lower()
+                    if input_include_obj_id=='q':
+                        break
+                    if input_include_obj_id=='d':
+                        input_obj_index_list+=protential_objs_list
+                        for elem in input_obj_index_list:
+                            protential_objs_list.remove(elem)
+                        break
+        return input_obj_index_list
+    else:
+        return input_obj_index_list
+        
 # 补全 AbstractMaterial 抽象基类（核心：初始化 material_name）
 class Material(metaclass=ABCMeta):
+    name_list=set()
+    center_list=set()
+    @abstractmethod
+    def terminal_input():
+        pass
     def __init__(self, material_name: str):
         # 关键：给实例赋值 material_name，子类才能继承到
         self.material_name = material_name
 #指定待处理的材料
-class ImpendingMaterial(Material):
-    def __init__(self,material_name):
+class PendingMaterial(Material):
+    def __init__(self,material_name="Pending"):
         super().__init__(material_name)
         
+    def terminal_input(protential_objs_list,center_obj_index,input_include_obj_index_list:Optional[List[int]]=None,input_exclude_obj_index_list:Optional[List[int]]=None):
+        pass
 # 修复后的 SourceMaterial 类
 class SourceMaterial(Material):
     # 修复：可变默认参数改为 None，避免共享列表
+    def terminal_input(protential_objs_list,center_obj_index,input_include_obj_index_list:Optional[List[int]]=None,input_exclude_obj_index_list:Optional[List[int]]=None):
+        pass
     def __init__(
         self, 
         material_name: str, 
@@ -52,6 +106,8 @@ class SourceMaterial(Material):
 
 # 修复后的 IsolationMaterial 类
 class IsolationMaterial(SourceMaterial):
+    def terminal_input(protential_objs_list,center_obj_index,input_include_obj_index_list:Optional[List[int]]=None,input_exclude_obj_index_list:Optional[List[int]]=None):
+        pass
     def __init__(
         self, 
         material_name: str, 
@@ -62,16 +118,37 @@ class IsolationMaterial(SourceMaterial):
         # 第二步：设置隔离材料的规则（None 表示禁止接触所有材料）
         self._restricted_materials = None
 
-class Adj_checker():
-    def __init__(self,center_obj,include_obj_list,exclude_obj_list):
-        self.center_obj=center_obj
-        self.include_obj_list=include_obj_list
-        self.exclude_obj_list=exclude_obj_list
 
 class GradientMaterial(Material):
-    def __init__(self,material_name,center_include_exclude_dict):
+    def terminal_input(protential_objs_list,center_obj_index,input_include_obj_index_list:Optional[List[int]]=None,input_exclude_obj_index_list:Optional[List[int]]=None):
+        material_name=input("please input the material name:")
+        while material_name in Material.name_list:
+            material_name=input(f"the material name:{material_name} already exists,please input another name:")
+        Material.name_list.add(material_name)
+
+        center_include_exclude_dict={
+            "center":None,
+            "include":None,
+            "exclude":None
+        }
+
+        if center_obj_index in Material.center_list:
+            print(f"the center object index:{center_obj_index} already exists,please input another index:")
+            return None,None
+        Material.center_list.add(center_obj_index)
+
+        center_include_exclude_dict["center"]=center_obj_index        
+        input_include_list=input_obj_index_list_input(mark="include",
+                                       protential_objs_list=protential_objs_list,
+                                       input_obj_index_list=input_include_obj_index_list)
+        input_exclude_list=input_obj_index_list_input(mark="exclude",
+                                       protential_objs_list=protential_objs_list,
+                                       input_obj_index_list=input_exclude_obj_index_list)
+        center_include_exclude_dict["include"]=input_include_list
+        center_include_exclude_dict["exclude"]=input_exclude_list
+        return material_name,center_include_exclude_dict
+    def __init__(self,material_name,target_obj,center_include_exclude_dict):
         super().__init__(material_name)
-        target_obj=center_include_exclude_dict["center"]
         source_obj_list=center_include_exclude_dict["include"]
         exclude_obj_list=center_include_exclude_dict["exclude"]
         composition={}
@@ -94,12 +171,165 @@ class TestObject:
         self.composition=composition
         self.nbr_objects=nbr_objects or []
 
-target_source_exclude_dict={
+class Abs_Materializer(metaclass=ABCMeta):
+    def __init__(self,geom_kernel:GeometryKernel):
+        objects=geom_kernel.geom.objects
+        self.pending_obj=[]
+        for obj_index,obj in objects.items():
+            obj.material=PendingMaterial()
+            obj.nbr_objects=geom_kernel.geom.graph[obj_index]
+            self.pending_obj.append(obj_index)
+        self.geom_kernel=geom_kernel
+    
+    @abstractmethod
+    def resolve_material(self,object_id):
+        pass
+    def terminal_input(self,adj_obj_list,object_id):
+        pass
+
+class Materializer(Abs_Materializer):
+    def resolve_material(self,object_id):
+        pass
+    def terminal_input(self,adj_obj_list,object_id):
+        pass
+class DefaultMaterializer(Abs_Materializer):
+    def resolve_material(self,object_id):  
+        adj_obj_set=self.geom_kernel.graph[object_id]  
+        adj_obj_list=list(adj_obj_set)
+        objects=self.geom_kernel.geom.objects
+        gradient,isolate,source=True,True,True
+        if len(adj_obj_list)==1:
+            print(f"Object id {object_id} cannot be gradient material,because it has only one neighbor")
+            gradient=False
+        else:
+            length=len(adj_obj_list)  
+            count=0
+            for adj_obj_id in adj_obj_list:
+                if isinstance(objects[adj_obj_id].material,IsolationMaterial):
+                    count+=1
+            if length-count<2:
+                print(f"Object id {object_id} cannot be gradient material,because it has only {length-count} neighbor(s) that are not isolation materials")
+                gradient=False
+        print("\n\nPlease choice the material type, as follow:")
+        if source:
+            print("Source Material, Choose:",1)
+        if isolate:
+            print("Isolation Material, Choose:",2)
+        if gradient:
+            print("Gradient Material, Choose:",3)
+        input_material_type=input("Please input the material type:")
+        if input_material_type.isdigit():
+            input_material_type=int(input_material_type)
+            obj=objects[object_id]
+            if input_material_type==1 and isolate:
+                obj.material=SourceMaterial()
+            elif input_material_type==2 and isolate:
+                obj.material=IsolationMaterial()
+            elif input_material_type==3 and gradient:
+                material_name,center_include_exclude_dict=GradientMaterial.terminal_input(adj_obj_list,object_id)
+                obj.material=GradientMaterial(material_name,obj,center_include_exclude_dict)
+            else:
+                print("invalid input")
+                return False
+        else:
+            print("invalid input")
+            return False
+        return True
+        
+    def resolver(self):
+        while True:
+            flag=True
+            for obj_index,obj in self.geom_kernel.geom.objects.items():
+                if isinstance(obj.material,PendingMaterial):
+                    flag=False
+                    break
+            if flag:
+                break
+            else:
+                print(f"input object index {self.pending_obj} to resolve:")
+                self.show()
+                input_obj_index=input("Please input the object index:")
+                self.show(eval(input_obj_index))
+                if input_obj_index.isdigit():
+                    input_obj_index=int(input_obj_index)
+                    if input_obj_index in self.pending_obj:
+                        if self.resolve_material(input_obj_index):
+                            self.pending_obj.remove(input_obj_index)
+                else:
+                    print("invalid input")
+    def visualizer_create(self,include_triangles_ids=None,opacity=0.1,labels=False):
+        visualizer=IVisualizer.create()
+        object_labels=[]
+        if labels:
+            for obj_index,obj in self.geom_kernel.geom.objects.items():
+                object_labels.append(str(obj_index))
+        if include_triangles_ids==None:
+            for obj_index,obj in self.geom_kernel.geom.objects.items():
+                visualizer.addObj(obj,opacity=opacity,label=str(obj_index) if labels else None)
+        else:
+            for obj_index,obj in self.geom_kernel.geom.objects.items():
+                visualizer.addObj(obj,include_triangles_ids=include_triangles_ids,opacity=opacity,label=str(obj_index) if labels else None)
+        if labels:
+            visualizer.add_legend(object_labels,(0.3,0.2))
+        return visualizer
+
+    def visualizer_addObj(self,visualizer,obj_index,include_triangles_ids=None,opacity=0.1,label=None):
+        if isinstance(obj_index,int):
+            obj=self.geom_kernel.geom.objects[obj_index]
+            if include_triangles_ids==None:
+                visualizer.addObj(obj,opacity=opacity,label=label)
+            else:
+                visualizer.addObj(obj,include_triangles_ids=include_triangles_ids,opacity=opacity,label=label)
+        elif isinstance(obj_index,list):
+            obj_list=obj_index
+            if include_triangles_ids!=None:
+                if len(obj_list)!=len(include_triangles_ids):
+                    raise ValueError("obj_list and include_triangles_ids must have the same length")
+            if label!=None:
+                if len(obj_list)!=len(label):
+                    raise ValueError("obj_list and label must have the same length")
+                labels=label
+            for idx,obj_idx in enumerate(obj_list):
+                obj=self.geom_kernel.geom.objects[obj_idx]
+                if include_triangles_ids!=None:
+                    visualizer.addObj(obj,include_triangles_ids=include_triangles_ids[idx],opacity=opacity,label=labels[idx])
+                else:
+                    visualizer.addObj(obj,opacity=opacity,label=labels[idx])
+        return visualizer
+    
+    def show(self,*args):
+        if args==():
+            visualizer=self.visualizer_create(opacity=0.5,labels=True)
+            visualizer.show()
+            return
+        elif len(args)==1:
+            object_id=args[0]
+            visualizer=self.visualizer_create(opacity=0.05)
+            visualizer=self.visualizer_addObj(visualizer,object_id,opacity=0.8,label=str(object_id))
+            visualizer.show()
+            return
+        elif len(args)==2:
+            object_id=args[0]
+            adj_obj_list=args[1]
+            adj_obj_list_labels=[str(obj_index) for obj_index in adj_obj_list]
+            visualizer=self.visualizer_create(opacity=0.05)
+            visualizer=self.visualizer_addObj(visualizer,object_id,opacity=0.8,label=str(object_id))
+            visualizer=self.visualizer_addObj(visualizer,adj_obj_list,opacity=0.2,label=adj_obj_list_labels)
+            visualizer.add_legend(labels=[str(object_id)]+adj_obj_list_labels,size=(0.1,0.1))
+            visualizer.show()
+            return 
+
+
+               
+        
+    
+if __name__=="__main__":
+    target_source_exclude_dict={
     "target":TestObject("target","GradientMaterial"),
     "source":[TestObject("source1","SourceMaterial"),TestObject("source2","SourceMaterial")],
     "exclude":[TestObject("exclude1","SourceMaterial")]
 }
-gradient_composition=GradientComposition("GradientComposition")
+    gradient_composition=GradientComposition("GradientComposition")
 
 
-# const_composition=ConstantComposition(["PLA","TPU"],[0.9,0.1])
+    const_composition=ConstantComposition(["PLA","TPU"],[0.9,0.1])
