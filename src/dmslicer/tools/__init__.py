@@ -1,6 +1,7 @@
 from .hash_utils import calculate_hash, recursive_hashable
 from .process_bar import show_progress_bar, show_spinner
 from .progress_bar import RecursionSpinner
+from .size_of import get_total_size
 
 __all__ = [
     "calculate_hash",
@@ -8,4 +9,5 @@ __all__ = [
     "show_progress_bar",
     "show_spinner",
     "RecursionSpinner",
+    "get_total_size",
 ]
