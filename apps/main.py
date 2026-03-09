@@ -17,7 +17,6 @@ if project_root not in sys.path:
 if src_dir not in sys.path:
     sys.path.append(src_dir)
 
-from dmslicer.materials import DefaultMaterializer
 
 # 导入拆分的模块
 # 注意：由于我们将 project_root 添加到了 sys.path，我们可以使用绝对导入
@@ -44,12 +43,15 @@ def main():
     init_session_state()
 
     st.title("DMSlicer")
-    st.markdown("DMSlicer is a tool for slicing 3D models.")
 
     # 渲染侧边栏
     with st.sidebar:
         render_sidebar()
-
+    try:
+        file_name = st.session_state.uploaded_file.name
+        st.markdown(f"**Uploaded File:** {file_name}")
+    except:
+        st.markdown("DMSlicer is a tool for slicing 3D models.")
     # 布局主体区域
     controls, viewport = st.columns([1, 2])
 
