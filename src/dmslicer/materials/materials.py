@@ -1,5 +1,6 @@
 from abc import ABCMeta,abstractmethod
 from typing import List,Dict,Optional
+import warnings
 import logging
 from ..geometry_kernel.geom_kernel import GeometryKernel
 from ..geometry_kernel.object_model import Object
@@ -58,16 +59,148 @@ def input_obj_index_list_input(mark="include",
     else:
         return input_obj_index_list
         
+import json
+import os
+import uuid
+
 # 补全 AbstractMaterial 抽象基类（核心：初始化 material_name）
+class Material_Property():
+    _materials_db = []
+    _db_path = os.path.join(os.getcwd(), "data", "materials_db.json")
+
+    def __init__(self, name, color=None,melting_temperature=None, soft_temperature=None,
+                 density=None, elastic_modulus=None, poisson_ratio=None, id=None, **kwargs):
+        self.id = id or str(uuid.uuid4())
+        self.name = name
+        self.color = color
+        self.melting_temperature = melting_temperature
+        self.melting_temperature_max = melting_temperature
+        self.melting_temperature_min = melting_temperature
+        self.soft_temperature = soft_temperature
+        self.soft_temperature_max = soft_temperature
+        self.soft_temperature_min = soft_temperature
+        self.composition = None
+        
+        # New fields
+        self.density = density
+        self.elastic_modulus = elastic_modulus
+        self.poisson_ratio = poisson_ratio
+
+    def to_dict(self):
+        """Convert material property to dictionary, excluding empty values and private attributes."""
+        return {
+            k: v for k, v in self.__dict__.items()
+            if not k.startswith('_') and v is not None and not (isinstance(v, (list, dict, set, tuple)) and len(v) == 0)
+        }
+
+    @classmethod
+    def load_from_json(cls):
+        """Load materials from JSON file."""
+        if not os.path.exists(cls._db_path):
+            cls._materials_db = []
+            return
+        try:
+            with open(cls._db_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                cls._materials_db = [cls(**item) for item in data]
+        except Exception as e:
+            logging.error(f"Failed to load materials: {e}")
+            cls._materials_db = []
+
+    @classmethod
+    def save_to_json(cls):
+        """Save materials to JSON file."""
+        data = [m.to_dict() for m in cls._materials_db]
+        os.makedirs(os.path.dirname(cls._db_path), exist_ok=True)
+        with open(cls._db_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+
+    @classmethod
+    def validate_material(cls, name: str):
+        """
+        Validate material data.
+        
+        Args:
+            data: Dictionary containing material properties.
+            
+        Raises:
+            ValueError: If validation fails.
+        """
+        if not name:
+            warnings.warn("Material name is required.")
+        else:
+            # Ensure db is loaded for duplicate check
+            if not cls._materials_db and os.path.exists(cls._db_path):
+                cls.load_from_json()
+            for m in cls._materials_db:
+                if m.name == name:
+                    warnings.warn(f"Material '{name}' already exists.")
+                    return False
+        return True
+
+    @classmethod
+    def add_material(cls, data: dict):
+        """
+        Add a new material.
+        
+        Args:
+            data: Dictionary containing material properties.
+            
+        Returns:
+            Material_Property: The created material object.
+        """
+        # Ensure db is loaded
+        if not cls._materials_db and os.path.exists(cls._db_path):
+            cls.load_from_json()
+            
+        if not cls.validate_material(data.get("name")):
+             raise ValueError(f"Material '{data.get('name')}' invalid or already exists.")
+             
+        obj = cls(**data)
+        cls._materials_db.append(obj)
+        cls.save_to_json()
+        return obj
+
+    @classmethod
+    def remove_material(cls, uuid_str):
+        """
+        Remove a material by ID.
+        
+        Args:
+            uuid_str: The UUID of the material to remove.
+        """
+        if not cls._materials_db and os.path.exists(cls._db_path):
+            cls.load_from_json()
+        cls._materials_db = [m for m in cls._materials_db if m.id != uuid_str]
+        cls.save_to_json()
+
+    @classmethod
+    def get_all_materials(cls):
+        """Get all materials."""
+        if not cls._materials_db:
+             cls.load_from_json()
+        return cls._materials_db
+        self.note=""
+
 class Material(metaclass=ABCMeta):
     name_list=set()
     center_list=set()
     @abstractmethod
     def terminal_input():
         pass
-    def __init__(self, material_name: str):
+    def __init__(self, material_name: str,material_property:Material_Property=None):
         # 关键：给实例赋值 material_name，子类才能继承到
         self.material_name = material_name
+        self.material_property=material_property
+    def __str__(self):
+        return self.material_name
+    def __repr__(self):
+        return self.material_name
+    def property(self):
+        return self.material_property
+    def set_property(self,material_property:Material_Property):
+        self.material_property=material_property
+
 #指定待处理的材料
 class PendingMaterial(Material):
     def __init__(self,material_name="Pending"):
