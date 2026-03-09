@@ -21,15 +21,11 @@ def init_session_state():
     if "cal_store" not in st.session_state:
         st.session_state.cal_store = {}
         st.session_state.cal_store['material']=None
-    if "scale" not in st.session_state:
-        st.session_state.scale = 10**DEFAULT_SIZE
-    if "scale_update_flag" not in st.session_state:
-        st.session_state.scale_update_flag = False
     if "material" not in st.session_state:
         st.session_state.material = {
             "Pending": [],
             "InProgress": [],
-            "Complete": []
+            "Completed": []
         }
     if "uploaded_file" not in st.session_state:
         st.session_state.uploaded_file = None
@@ -43,3 +39,8 @@ def init_session_state():
         st.session_state.last_update_ts = ""
     if "last_processed_id" not in st.session_state:
         st.session_state.last_processed_id = None
+
+    if "material_properties" not in st.session_state:
+        st.session_state.material_properties = {}
+    if "temp_mat_dict" not in st.session_state:
+        st.session_state.temp_mat_dict = {}
