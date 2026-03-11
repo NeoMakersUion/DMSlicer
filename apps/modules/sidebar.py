@@ -4,74 +4,12 @@ from dmslicer.file_parser import read_amf_objects, Model
 from dmslicer.geometry_kernel.geom_kernel import GeometryKernel
 from .state import DEFAULT_SIZE
 from dmslicer.materials.materials import Materializer,Material_Property
-import colorsys
+from dmslicer.tools import hex2rgb,hex2hsl,rgb2hex,hsl2hex
 import pandas as pd
 import copy
-import ast
-import math
-import json
+from dmslicer.tools import clean_dict
+from dmslicer.tools import adjust_unit
 
-def clean_dict(data):
-    cleaned = {}
-    for key, value in data.items():
-        # 1. 处理 NaN 值 (转为 None)
-        if isinstance(value, float) and math.isnan(value):
-            cleaned[key] = None
-            continue
-            
-        # 2. 处理字符串类型的字典/列表
-        if isinstance(value, str):
-            # 尝试判断是否看起来像字典或列表 (以 { 或 [ 开头)
-            stripped = value.strip()
-            if (stripped.startswith('{') and stripped.endswith('}')) or \
-               (stripped.startswith('[') and stripped.endswith(']')):
-                try:
-                    # 使用 ast.literal_eval 安全地转换字符串为 Python 对象
-                    # 它能处理单引号 {'a': 1} 和双引号 {"a": 1}
-                    cleaned[key] = ast.literal_eval(stripped)
-                except (ValueError, SyntaxError):
-                    # 如果解析失败，保留原字符串
-                    cleaned[key] = value
-            else:
-                cleaned[key] = value
-        else:
-            # 其他类型直接保留
-            cleaned[key] = value
-            
-    return cleaned
-
-def adjust_unit(property_name:str):
-    if "density" in property_name.lower():
-        return ["kg/m3","g/cm3"]
-    elif "modulus" in property_name.lower():
-        return ["Pa","KPa","MPa"]
-    elif "ratio" in property_name.lower():
-        return ["-"]
-    elif "temp" in property_name.lower():
-        return ["C","F","K"]
-    elif "color" in property_name.lower():
-        return ["RGB","HSL","HEX"]
-    else:
-        return ["kg/m3","Pa","-","C"]
-
-def hex2rgb(hex_color:str):
-    hex_color=hex_color.lstrip("#")
-    r,g,b=[int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
-    return (r,g,b)
-
-def hex2hsl(hex_color:str):
-    r,g,b=hex2rgb(hex_color)
-    h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-    return (h,l,s)
-
-def rgb2hex(rgb:tuple):
-    r,g,b=rgb
-    return "#{:02x}{:02x}{:02x}".format(r, g, b)
-def hsl2hex(hsl:tuple):
-    h,l,s=hsl
-    r, g, b = colorsys.hls_to_rgb(h, l, s)
-    r, g, b = int(r * 255), int(g * 255), int(b * 255)
-    return rgb2hex((r,g,b))
 def save_draft_cb():
     temp_mat_name=st.session_state.new_mat_name
     if not temp_mat_name: return
@@ -130,7 +68,8 @@ def render_sidebar():
                 st.session_state.new_mat_name = "" # Reset name
                 st.session_state.mat_caption_msg = f"✅ Material '{name}' added successfully"
                 st.toast(f"Material '{name}' added")
-                del st.session_state.temp_mat_dict[name]
+                if name in st.session_state.temp_mat_dict:
+                    del st.session_state.temp_mat_dict[name]
                 st.session_state.material_properties={}
             except ValueError as e:
                 st.session_state.mat_caption_msg = f"❌ {str(e)}"
@@ -167,21 +106,17 @@ def render_sidebar():
         if "color" in st.session_state.new_property_name.lower():
             hex_color=c2_3.color_picker("Value",key="property_color_picker")
             if "rgb" in st.session_state.new_property_unit.lower():
-                hex_color=hex_color.lstrip("#")
-                st.session_state.new_property_value=tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+                st.session_state.new_property_value=hex2rgb(hex_color)
             elif "hex" in st.session_state.new_property_unit.lower():
                 st.session_state.new_property_value=hex_color
             elif "hsl" in st.session_state.new_property_unit.lower():
-                hex_color=hex_color.lstrip("#")
-                r,g,b=[int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
-                h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-                st.session_state.new_property_value=(h,l,s)
+                st.session_state.new_property_value=hex2hsl(hex_color)
         else:
             st.session_state.new_property_value=c2_3.number_input("Value",value=1.0, min_value=0.01, step=0.1, key="property_value_input", format="%.2f")
         c3_1,c3_2,c3_3=st.columns([1,1,1])
-        c3_1.button("Add Property", on_click=add_material_property_cb)
-        c3_2.button("Save as Draft", on_click=save_draft_cb)
-        c3_3.button("Save to Library", on_click=register_material_to_library_cb)
+        c3_1.button("Add Property", on_click=add_material_property_cb,width="stretch")
+        c3_2.button("Save as Draft", on_click=save_draft_cb,width="stretch")
+        c3_3.button("Save to Library", on_click=register_material_to_library_cb,width="stretch")
         props = st.session_state.material_properties
         if props:
             df = pd.DataFrame.from_dict(props, orient="index")
@@ -243,8 +178,8 @@ def render_sidebar():
         selected_list=[e for e in edited_df if e.get('Select')]
         if selected_list!=[]:
              st.warning(f"{len(selected_list)} item(s) selected")
-             col_d1, col_d2, col_d3 = st.columns(3)
-             if col_d1.button("Edit", key="btn_edit_mat"):
+             col_d1, col_d2 = st.columns(2)
+             if col_d1.button("Edit", key="btn_edit_mat",width="stretch"):
                 for e in selected_list:
                     Material_Property.remove_material(e['id'])
                     mat_dict=copy.deepcopy(clean_dict(e))
@@ -253,13 +188,12 @@ def render_sidebar():
                     mat_name=e['name']
                     st.session_state.temp_mat_dict[mat_name]=mat_dict
                     st.rerun()
-             if col_d2.button("Delete", key="btn_del_mat"):
+             if col_d2.button("Delete", key="btn_del_mat",width="stretch"):
                  for e in selected_list:
                     edited_df.remove(e)
                     Material_Property.remove_material(e['id'])
                  st.rerun()
-             if col_d3.button("Cancel", key="btn_cancel_mat"):
-                 st.rerun()
+
 
         changes_detected = False
         def is_diff(a, b):
