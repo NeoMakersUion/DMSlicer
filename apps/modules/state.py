@@ -39,6 +39,10 @@ def init_session_state():
         st.session_state.last_update_ts = ""
     if "last_processed_id" not in st.session_state:
         st.session_state.last_processed_id = None
+    if "show_oids" not in st.session_state:
+        st.session_state.show_oids = []
+    if "reset_show_editor" not in st.session_state:
+        st.session_state.reset_show_editor = False
 
     if "material_properties" not in st.session_state:
         st.session_state.material_properties = {}

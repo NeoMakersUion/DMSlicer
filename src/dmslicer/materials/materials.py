@@ -1,15 +1,15 @@
 from abc import ABCMeta,abstractmethod
-from typing import List,Dict,Optional
+from typing import List,Optional
+import json
+import os
+import uuid
 import warnings
 import logging
 from ..geometry_kernel.geom_kernel import GeometryKernel
-from ..geometry_kernel.object_model import Object
 try:
     from .composition import ConstantComposition,GradientComposition
 except ImportError:
     from composition import ConstantComposition,GradientComposition
-
-from ..geometry_kernel.geom_kernel import GeometryKernel
 
 from dmslicer.visualizer.visualizer_interface import IVisualizer
 logging.basicConfig(
@@ -28,7 +28,7 @@ class Adj_checker():
 def input_obj_index_list_input(mark="include",
                                 protential_objs_list=None,
                                 input_obj_index_list=None):
-    if input_obj_index_list==None:
+    if input_obj_index_list is None:
         input_obj_index_list=[]
         input_include_obj_id=None
         while protential_objs_list!=[] and input_include_obj_id!="q":
@@ -41,7 +41,7 @@ def input_obj_index_list_input(mark="include",
                 input_include_obj_id=eval(input_include_obj_id)
                 protential_objs_list.remove(input_include_obj_id)
                 input_obj_index_list.append(input_include_obj_id)
-            except :
+            except Exception:
                 if isinstance(input_include_obj_id,list):
                     for item in input_include_obj_id:
                         protential_objs_list.remove(item)
@@ -58,10 +58,7 @@ def input_obj_index_list_input(mark="include",
         return input_obj_index_list
     else:
         return input_obj_index_list
-        
-import json
-import os
-import uuid
+
 
 # 补全 AbstractMaterial 抽象基类（核心：初始化 material_name）
 class Material_Property():
@@ -69,7 +66,7 @@ class Material_Property():
     _db_path = os.path.join(os.getcwd(), "data", "materials_db.json")
 
     def __init__(self, name, color=None,melting_temperature=None, soft_temperature=None,
-                 density=None, elastic_modulus=None, poisson_ratio=None, id=None, **kwargs):
+                 composition=None, density=None, elastic_modulus=None, poisson_ratio=None, id=None, **kwargs):
         self.id = id or str(uuid.uuid4())
         self.name = name
         self.color = color
@@ -79,7 +76,7 @@ class Material_Property():
         self.soft_temperature = soft_temperature
         self.soft_temperature_max = soft_temperature
         self.soft_temperature_min = soft_temperature
-        self.composition = None
+        self.composition = composition
         
         # New fields
         self.density = density
@@ -178,9 +175,8 @@ class Material_Property():
     def get_all_materials(cls):
         """Get all materials."""
         if not cls._materials_db:
-             cls.load_from_json()
+            cls.load_from_json()
         return cls._materials_db
-        self.note=""
 
 class Material(metaclass=ABCMeta):
     name_list=set()
@@ -283,16 +279,26 @@ class GradientMaterial(Material):
     def __init__(self,material_name,target_obj,center_include_exclude_dict):
         super().__init__(material_name)
         source_obj_list=center_include_exclude_dict["include"]
-        exclude_obj_list=center_include_exclude_dict["exclude"]
+        exclude_obj_list=center_include_exclude_dict["exclude"] or []
         composition={}
-        if source_obj_list==None:
-            source_obj_list=target_obj.nbr_objects
+        if source_obj_list is None:
+            source_obj_list=target_obj.nbr_objects or []
         for source_obj in source_obj_list:
             if source_obj in exclude_obj_list:
                 continue
             if source_obj not in target_obj.nbr_objects:
                 continue
-            composition[source_obj]=source_obj.composition
+            comp = None
+            if hasattr(source_obj, "composition"):
+                comp = getattr(source_obj, "composition", None)
+            else:
+                objects = getattr(target_obj, "_geom_objects", None)
+                if isinstance(source_obj, (int, float)) and objects is not None:
+                    nbr_obj = objects.get(source_obj)
+                    if nbr_obj is not None:
+                        mat = getattr(nbr_obj, "material", None)
+                        comp = getattr(mat, "composition", None)
+            composition[source_obj]=comp
         
         self.composition=GradientComposition(material_name)
         self.composition.set_composition(composition)
@@ -396,7 +402,7 @@ class DefaultMaterializer(Abs_Materializer):
         if labels:
             for obj_index,obj in self.geom_kernel.geom.objects.items():
                 object_labels.append(str(obj_index))
-        if include_triangles_ids==None:
+        if include_triangles_ids is None:
             for obj_index,obj in self.geom_kernel.geom.objects.items():
                 visualizer.addObj(obj,opacity=opacity,label=str(obj_index) if labels else None)
         else:
@@ -409,22 +415,24 @@ class DefaultMaterializer(Abs_Materializer):
     def visualizer_addObj(self,visualizer,obj_index,include_triangles_ids=None,opacity=0.1,label=None):
         if isinstance(obj_index,int):
             obj=self.geom_kernel.geom.objects[obj_index]
-            if include_triangles_ids==None:
+            if include_triangles_ids is None:
                 visualizer.addObj(obj,opacity=opacity,label=label)
             else:
                 visualizer.addObj(obj,include_triangles_ids=include_triangles_ids,opacity=opacity,label=label)
         elif isinstance(obj_index,list):
             obj_list=obj_index
-            if include_triangles_ids!=None:
+            if include_triangles_ids is not None:
                 if len(obj_list)!=len(include_triangles_ids):
                     raise ValueError("obj_list and include_triangles_ids must have the same length")
-            if label!=None:
+            if label is not None:
                 if len(obj_list)!=len(label):
                     raise ValueError("obj_list and label must have the same length")
                 labels=label
+            else:
+                labels=[None for _ in obj_list]
             for idx,obj_idx in enumerate(obj_list):
                 obj=self.geom_kernel.geom.objects[obj_idx]
-                if include_triangles_ids!=None:
+                if include_triangles_ids is not None:
                     visualizer.addObj(obj,include_triangles_ids=include_triangles_ids[idx],opacity=opacity,label=labels[idx])
                 else:
                     visualizer.addObj(obj,opacity=opacity,label=labels[idx])

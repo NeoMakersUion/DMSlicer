@@ -1,21 +1,23 @@
-from pandas._libs import properties
 import streamlit as st
+from apps.modules.material_assignment_store import load_material_assignment
 from dmslicer.file_parser import read_amf_objects, Model
 from dmslicer.geometry_kernel.geom_kernel import GeometryKernel
-from .state import DEFAULT_SIZE
 from dmslicer.materials.materials import Materializer,Material_Property
-from dmslicer.tools import hex2rgb,hex2hsl,rgb2hex,hsl2hex
+from dmslicer.tools import hex2rgb,hex2hsl
 import pandas as pd
 import copy
 from dmslicer.tools import clean_dict
 from dmslicer.tools import adjust_unit
+from typing import Dict
 
 def save_draft_cb():
     temp_mat_name=st.session_state.new_mat_name
-    if not temp_mat_name: return
+    if not temp_mat_name:
+        return
     st.session_state.temp_mat_dict[temp_mat_name] = copy.deepcopy(st.session_state.material_properties)
-    st.session_state.material_properties = {}
-    st.session_state.new_mat_name = ""
+    st.session_state.temp_mat_name = temp_mat_name
+    st.session_state.new_mat_name = temp_mat_name
+    st.session_state.material_properties = copy.deepcopy(st.session_state.temp_mat_dict[temp_mat_name])
 def load_temporary_material_cb():
     temp_mat_name=st.session_state.temp_mat_name
     if temp_mat_name in st.session_state.temp_mat_dict:
@@ -29,10 +31,10 @@ def render_sidebar():
     st.subheader("Upload and Recalculate")
     try:
         st.session_state.recal_flag
-    except:
+    except Exception:
         st.session_state.recal_flag = False
         
-    if st.session_state.recal_flag == False:
+    if not st.session_state.recal_flag:
         uploaded_file = st.file_uploader("请选择文件", type=["amf","AMF"])
         
         if uploaded_file is not None and uploaded_file != st.session_state.uploaded_file:
@@ -41,10 +43,31 @@ def render_sidebar():
             model: Model = read_amf_objects(uploaded_file)
             geom_kernal=GeometryKernel(model) 
             material=Materializer(geom_kernal)
-            st.session_state.cal_store["material"] = material  
+            st.session_state.cal_store["material"] = material
             st.session_state.material["Pending"]=material.pending_obj
             st.session_state.material["InProgress"]=[]
             st.session_state.material["Completed"]=[]
+            st.session_state.processing_active = False
+            st.session_state.processing_obj_id = None
+            st.session_state.selected_oid = None
+            st.session_state.show_oids = []
+            st.session_state.reset_show_editor = True
+
+            try:
+                objects = getattr(material.geom_kernel.geom, "objects", {}) or {}
+                load_result = load_material_assignment(material, objects)
+                restored_oid = load_result.get("processing_obj_id")
+                if restored_oid is not None:
+                    st.session_state.processing_active = True
+                    st.session_state.processing_obj_id = restored_oid
+                    st.session_state.selected_oid = restored_oid
+                    st.session_state.processing_obj_select = str(restored_oid)
+                else:
+                    st.session_state.processing_obj_select = ""
+                if load_result.get("found") and load_result.get("loaded_count"):
+                    st.toast(f"Loaded saved progress from {load_result['path'].name}")
+            except Exception as e:
+                st.warning(f"Failed to load saved progress: {e}")
 
     st.markdown("---")
     with st.expander("Properties Editor", expanded=True):
@@ -56,14 +79,23 @@ def render_sidebar():
             property_name=st.session_state.new_property_name
             property_unit=st.session_state.new_property_unit
             property_value=st.session_state.new_property_value
+            if property_name == "composition" and property_value is None:
+                st.session_state.mat_caption_msg = "❌ Composition sum must be 1"
+                return
             st.session_state.material_properties[property_name]={"value":property_value,"unit":property_unit}
         # Callback for adding material
         def register_material_to_library_cb():
             try:
                 name = st.session_state.new_mat_name
-                if not name: return
-                data = st.session_state.material_properties
-                data["name"]=st.session_state.new_mat_name
+                if not name:
+                    return
+                data = {}
+                for k, v in st.session_state.material_properties.items():
+                    if isinstance(v, dict) and "value" in v:
+                        data[k] = v.get("value")
+                    else:
+                        data[k] = v
+                data["name"] = name
                 Material_Property.add_material(data)
                 st.session_state.new_mat_name = "" # Reset name
                 st.session_state.mat_caption_msg = f"✅ Material '{name}' added successfully"
@@ -100,10 +132,144 @@ def render_sidebar():
         remove_list=["id","name","self","kwargs"]
         for item in remove_list:
             property_list.remove(item)
+        preferred_props = ["melting_temperature", "soft_temperature", "composition"]
+        property_list = [p for p in preferred_props if p in property_list] + [
+            p for p in property_list if p not in preferred_props
+        ]
         c2_1.selectbox("Property Name",property_list,key="new_property_name")
         unit_list=adjust_unit(st.session_state.new_property_name)
         c2_2.selectbox("Unit",unit_list,key="new_property_unit")
-        if "color" in st.session_state.new_property_name.lower():
+
+        def _format_composition_label(value) -> str:
+            comp = value
+            if isinstance(comp, dict) and "value" in comp and set(comp.keys()).issubset({"value", "unit"}):
+                comp = comp.get("value")
+
+            if isinstance(comp, str):
+                parts = [p.strip() for p in comp.split(",") if p.strip()]
+                parsed: Dict[str, float] = {}
+                ok = True
+                for part in parts:
+                    if ":" not in part:
+                        ok = False
+                        break
+                    part_key, part_val = part.split(":", 1)
+                    part_key = part_key.strip()
+                    if not part_key:
+                        ok = False
+                        break
+                    try:
+                        parsed[part_key] = float(part_val)
+                    except Exception:
+                        ok = False
+                        break
+                if ok and parsed:
+                    comp = parsed
+                else:
+                    return comp
+
+            if isinstance(comp, dict):
+                normalized: Dict[str, object] = {}
+                for raw_key, raw_val in comp.items():
+                    name = str(raw_key).strip()
+                    if not name:
+                        continue
+                    try:
+                        normalized[name] = float(raw_val)
+                    except Exception:
+                        normalized[name] = str(raw_val)
+
+                items = sorted(normalized.items(), key=lambda kv: kv[0])
+                out = []
+                for name, ratio in items:
+                    if isinstance(ratio, (int, float)):
+                        out.append(f"{name}:{float(ratio):.6g}")
+                    else:
+                        out.append(f"{name}:{ratio}")
+                return ",".join(out)
+
+            return "" if comp is None else str(comp)
+
+        def _coerce_composition(value) -> Dict[str, float]:
+            comp: Dict[str, float] = {}
+            if value is None:
+                return comp
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return comp
+                if ":" in text:
+                    parts = [p.strip() for p in text.split(",") if p.strip()]
+                    parsed: Dict[str, float] = {}
+                    for part in parts:
+                        if ":" not in part:
+                            continue
+                        part_key, part_val = part.split(":", 1)
+                        part_key = part_key.strip()
+                        if not part_key:
+                            continue
+                        try:
+                            parsed[part_key] = float(part_val)
+                        except Exception:
+                            continue
+                    if parsed:
+                        return parsed
+                comp[text] = 1.0
+                return comp
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    if k is None:
+                        continue
+                    name = str(k).strip()
+                    if not name:
+                        continue
+                    try:
+                        ratio = float(v)
+                    except Exception:
+                        continue
+                    comp[name] = comp.get(name, 0.0) + ratio
+                return comp
+            return comp
+
+        if st.session_state.new_property_name == "composition":
+            default_component = st.session_state.get("new_mat_name") or "Material_name"
+            init_comp = None
+            if st.session_state.get("new_property_value") is not None:
+                init_comp = _coerce_composition(st.session_state.get("new_property_value"))
+            if init_comp is None or init_comp == {}:
+                init_comp = {default_component: 1.0}
+            comp_df = pd.DataFrame(
+                [{"material": k, "ratio": float(v)} for k, v in init_comp.items()]
+            )
+            edited_comp_df = st.data_editor(
+                comp_df,
+                num_rows="dynamic",
+                hide_index=True,
+                key="composition_editor",
+                width="stretch",
+            )
+            comp: Dict[str, float] = {}
+            for _, row in edited_comp_df.iterrows():
+                name = str(row.get("material", "")).strip()
+                if not name:
+                    continue
+                try:
+                    ratio = float(row.get("ratio", 0.0))
+                except Exception:
+                    ratio = 0.0
+                comp[name] = comp.get(name, 0.0) + ratio
+            total = sum(comp.values())
+            if len(comp) == 0:
+                comp = {default_component: 1.0}
+                total = 1.0
+            if abs(total - 1.0) <= 1e-6:
+                st.session_state.new_property_value = comp
+                c2_3.caption(_format_composition_label(comp))
+            else:
+                st.session_state.new_property_value = None
+                c2_3.error(f"sum={total:.6g} (need 1)")
+
+        elif "color" in st.session_state.new_property_name.lower():
             hex_color=c2_3.color_picker("Value",key="property_color_picker")
             if "rgb" in st.session_state.new_property_unit.lower():
                 st.session_state.new_property_value=hex2rgb(hex_color)
@@ -119,9 +285,28 @@ def render_sidebar():
         c3_3.button("Save to Library", on_click=register_material_to_library_cb,width="stretch")
         props = st.session_state.material_properties
         if props:
-            df = pd.DataFrame.from_dict(props, orient="index")
-            if "value" not in df.columns: df["value"] = ""
-            if "unit" not in df.columns: df["unit"] = ""
+            normalized_props = {}
+            for prop_name, entry in props.items():
+                if prop_name == "Select":
+                    continue
+                if isinstance(entry, dict) and "value" in entry and "unit" in entry:
+                    normalized_props[prop_name] = entry
+                    continue
+                unit_candidates = adjust_unit(str(prop_name))
+                unit_default = unit_candidates[0] if unit_candidates else "-"
+                value = entry
+                if prop_name == "composition":
+                    coerced = _coerce_composition(entry)
+                    value = coerced if coerced else entry
+                    unit_default = "-"
+                normalized_props[prop_name] = {"value": value, "unit": unit_default}
+
+            st.session_state.material_properties = normalized_props
+            df = pd.DataFrame.from_dict(normalized_props, orient="index")
+            if "value" not in df.columns:
+                df["value"] = ""
+            if "unit" not in df.columns:
+                df["unit"] = ""
             
             df = df.reset_index()
             df["value"] = df["value"].astype(str)
@@ -132,7 +317,11 @@ def render_sidebar():
             df = df[["del","property", "value", "unit"]]
             
             edited_df_mat_tmp=st.data_editor(df,disabled=["property","unit"],hide_index=True,key="material_properties_df",width='stretch')
-            del_properties=[df.iloc[i]['property'] for i in range(len(edited_df_mat_tmp)) if edited_df_mat_tmp.iloc[i]['del']==True]
+            del_properties=[
+                df.iloc[i]["property"]
+                for i in range(len(edited_df_mat_tmp))
+                if edited_df_mat_tmp.iloc[i]["del"]
+            ]
             if del_properties:
                 st.warning(f"Delete {len(del_properties)} item(s)?")
                 col_d1, col_d2 = st.columns(2)
@@ -152,14 +341,31 @@ def render_sidebar():
         
         current_data = [m.to_dict() for m in materials]
         for d in current_data:
-             d['Select'] = False
+            d["Select"] = False
+            comp = d.get("composition")
+            if isinstance(comp, dict):
+                d["composition"] = _format_composition_label(comp)
         
         if len(current_data) > 0:
-            all_keys = list(current_data[0].keys())
-            fixed_order = ["id", "Select", "name"]
-            fixed_order = [col for col in fixed_order if col in all_keys]
-            remaining_cols = [col for col in all_keys if col not in fixed_order]
-            column_order = fixed_order + remaining_cols
+            key_set = set()
+            for row in current_data:
+                key_set.update(row.keys())
+
+            preferred_order = [
+                "id",
+                "Select",
+                "name",
+                "melting_temperature",
+                "soft_temperature",
+                "composition",
+                "density",
+                "elastic_modulus",
+                "poisson_ratio",
+                "color",
+            ]
+            column_order = [c for c in preferred_order if c in key_set]
+            remaining_cols = [c for c in sorted(key_set) if c not in set(column_order)]
+            column_order = column_order + remaining_cols
         else:
             column_order = ["id", "Select", "name"]
 
@@ -185,8 +391,19 @@ def render_sidebar():
                     mat_dict=copy.deepcopy(clean_dict(e))
                     del mat_dict['id']
                     del mat_dict['name']
+                    if "Select" in mat_dict:
+                        del mat_dict["Select"]
                     mat_name=e['name']
-                    st.session_state.temp_mat_dict[mat_name]=mat_dict
+                    normalized_edit_props = {}
+                    for prop_name, value in mat_dict.items():
+                        unit_candidates = adjust_unit(str(prop_name))
+                        unit_default = unit_candidates[0] if unit_candidates else "-"
+                        if prop_name == "composition":
+                            coerced = _coerce_composition(value)
+                            value = coerced if coerced else value
+                            unit_default = "-"
+                        normalized_edit_props[prop_name] = {"value": value, "unit": unit_default}
+                    st.session_state.temp_mat_dict[mat_name]=normalized_edit_props
                     st.rerun()
              if col_d2.button("Delete", key="btn_del_mat",width="stretch"):
                  for e in selected_list:
@@ -197,8 +414,10 @@ def render_sidebar():
 
         changes_detected = False
         def is_diff(a, b):
-            if a is None and b is None: return False
-            if a is None or b is None: return True
+            if a is None and b is None:
+                return False
+            if a is None or b is None:
+                return True
             try:
                 return abs(a - b) > 1e-6
             except TypeError:
@@ -207,15 +426,21 @@ def render_sidebar():
         for row in edited_df:
             obj = next((m for m in materials if m.id == row['id']), None)
             if obj:
-                if (obj.name != row['name'] or 
-                    is_diff(obj.density, row['density']) or
-                    is_diff(obj.elastic_modulus, row['elastic_modulus']) or
-                    is_diff(obj.poisson_ratio, row['poisson_ratio'])):
+                row_density = row.get("density")
+                row_elastic_modulus = row.get("elastic_modulus")
+                row_poisson_ratio = row.get("poisson_ratio")
+
+                if (
+                    obj.name != row.get("name")
+                    or is_diff(obj.density, row_density)
+                    or is_diff(obj.elastic_modulus, row_elastic_modulus)
+                    or is_diff(obj.poisson_ratio, row_poisson_ratio)
+                ):
                     
-                    obj.name = row['name']
-                    obj.density = row['density']
-                    obj.elastic_modulus = row['elastic_modulus']
-                    obj.poisson_ratio = row['poisson_ratio']
+                    obj.name = row.get("name")
+                    obj.density = row_density
+                    obj.elastic_modulus = row_elastic_modulus
+                    obj.poisson_ratio = row_poisson_ratio
                     changes_detected = True
         
         if changes_detected:
