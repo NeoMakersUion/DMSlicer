@@ -35,27 +35,27 @@ def html_generator(*args,**kwargs):
 
     if not center_ids and not nbrs_ids:
         for _, obj in objects.items():
-            visualizer.addObj(obj)
+            visualizer.addObj(obj,show_edges=False)
     else:
         for oid in center_ids:
             obj = objects.get(oid)
             if obj is None:
                 continue
-            visualizer.addObj(obj, opacity=center_opacity)
+            visualizer.addObj(obj, opacity=center_opacity, show_edges=False)
             rest_set.discard(oid)
 
         for oid in nbrs_ids:
             obj = objects.get(oid)
             if obj is None:
                 continue
-            visualizer.addObj(obj, opacity=nbrs_opacity)
+            visualizer.addObj(obj, opacity=nbrs_opacity,show_edges=False)
             rest_set.discard(oid)
 
         for oid in rest_set:
             obj = objects.get(oid)
             if obj is None:
                 continue
-            visualizer.addObj(obj, opacity=other_opacity)
+            visualizer.addObj(obj, opacity=other_opacity,show_edges=False)
 
 
     print(f"[DEBUG] Block execution time: {time.time() - t_start_block:.6f} seconds")

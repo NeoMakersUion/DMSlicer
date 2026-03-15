@@ -23,7 +23,7 @@ if src_dir not in sys.path:
 from apps.modules.state import init_session_state, get_global_resources
 from apps.modules.utils import ensure_xvfb
 from apps.modules.sidebar import render_sidebar
-from apps.modules.controls import render_controls
+from apps.modules.controls import Materialize
 from apps.modules.viewport import render_viewport
 
 # 解决 Streamlit 的异步循环冲突
@@ -56,7 +56,8 @@ def main():
     controls, viewport = st.columns([1, 2])
 
     with controls:
-        render_controls()
+        Materialize()
+        
     
     with viewport:
         render_viewport()
