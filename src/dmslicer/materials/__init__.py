@@ -13,6 +13,7 @@ from .materials import (
     Adj_checker,
     Abs_Materializer,
     DefaultMaterializer,
+    load_materials,
 )
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "Adj_checker",
     "Abs_Materializer",
     "DefaultMaterializer",
+    "load_materials",
 ]
 

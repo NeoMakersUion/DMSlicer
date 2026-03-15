@@ -278,30 +278,16 @@ class GradientMaterial(Material):
         return material_name,center_include_exclude_dict
     def __init__(self,material_name,target_obj,center_include_exclude_dict):
         super().__init__(material_name)
+        self.composition=GradientComposition(material_name)
         source_obj_list=center_include_exclude_dict["include"]
         exclude_obj_list=center_include_exclude_dict["exclude"] or []
-        composition={}
-        if source_obj_list is None:
-            source_obj_list=target_obj.nbr_objects or []
-        for source_obj in source_obj_list:
-            if source_obj in exclude_obj_list:
-                continue
-            if source_obj not in target_obj.nbr_objects:
-                continue
-            comp = None
-            if hasattr(source_obj, "composition"):
-                comp = getattr(source_obj, "composition", None)
-            else:
-                objects = getattr(target_obj, "_geom_objects", None)
-                if isinstance(source_obj, (int, float)) and objects is not None:
-                    nbr_obj = objects.get(source_obj)
-                    if nbr_obj is not None:
-                        mat = getattr(nbr_obj, "material", None)
-                        comp = getattr(mat, "composition", None)
-            composition[source_obj]=comp
-        
-        self.composition=GradientComposition(material_name)
-        self.composition.set_composition(composition)
+        nbr_objs=getattr(target_obj,"nbr_objects",[]) or []
+        nbr_set=set(nbr_objs)
+        include_set={i for i in (nbr_set if source_obj_list is None else source_obj_list) if i in nbr_set}
+        exclude_set={i for i in exclude_obj_list if i in nbr_set}
+        self.include=include_set
+        self.exclude=exclude_set
+
 
 class TestObject:
     def __init__(self,obj_name,material_type,composition=None,nbr_objects=None):
@@ -325,6 +311,9 @@ class Abs_Materializer(metaclass=ABCMeta):
         pass
     def terminal_input(self,adj_obj_list,object_id):
         pass
+    def load_materials(self):
+        from dmslicer.materials import load_materials
+        load_materials(self)
 
 class Materializer(Abs_Materializer):
     def resolve_material(self,object_id):
@@ -474,3 +463,56 @@ if __name__=="__main__":
 
 
     const_composition=ConstantComposition(["PLA","TPU"],[0.9,0.1])
+def load_materials(materializer):
+    import os,json
+    objects=materializer.geom_kernel.geom.objects
+    for _obj in objects.values():
+        setattr(_obj,"_geom_objects",objects)
+    hash_id=materializer.geom_kernel.geom.model.hash_id
+    ws_dir=os.path.join("d:\\DMSlicer","data","workspace",hash_id,"material")
+    assign_path=os.path.join(ws_dir,"material_assignment.json")
+    props_path=os.path.join(ws_dir,"material_properties.json")
+    with open(assign_path,"r",encoding="utf-8") as f:
+        assign_cfg=json.load(f)
+    with open(props_path,"r",encoding="utf-8") as f:
+        props_cfg=json.load(f)
+    props_map={m["name"]:m for m in props_cfg.get("materials",[])}
+    def build_property(name:str):
+        data=props_map.get(name)
+        if not data:
+            return None
+        return Material_Property(
+            id=data.get("id"),
+            name=data.get("name"),
+            melting_temperature=data.get("melting_temperature"),
+            soft_temperature=data.get("soft_temperature"),
+            composition=data.get("composition"),
+        )
+    order_keys=list(assign_cfg.get("objects",{}).keys())
+    for k in order_keys:
+        v=assign_cfg["objects"][k]
+        idx=int(k)
+        t=v.get("material_type")
+        n=v.get("material_name")
+        composition=props_map.get(n,{}).get("composition",{})
+        if t in ("SourceMaterial","IsolationMaterial"):
+            if t=="SourceMaterial":
+                m=SourceMaterial(n,composition,v.get("restricted_materials"))
+            else:
+                m=IsolationMaterial(n,composition)
+            prop=build_property(n)
+            if prop:
+                m.set_property(prop)
+            objects[idx].material=m
+    for k in order_keys:
+        v=assign_cfg["objects"][k]
+        idx=int(k)
+        t=v.get("material_type")
+        if t=="GradientMaterial":
+            include=v.get("include") or []
+            exclude=v.get("exclude") or []
+            target_obj=objects[idx]
+            cfg={"center":idx,"include":include,"exclude":exclude}
+            g=GradientMaterial(v.get("material_name"),target_obj,cfg)
+            objects[idx].material=g
+    return props_map
