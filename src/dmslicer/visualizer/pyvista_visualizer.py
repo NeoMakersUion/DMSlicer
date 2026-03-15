@@ -61,7 +61,7 @@ class PyVistaVisualizer(IVisualizer):
         triangles=np.array([[0,1,2]])
         self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity,label=label)
     
-    def addObj(self,object:"Object",include_triangles_ids=None,exclude_triangles_ids=None,opacity:float=0.5,color=None,label=None):
+    def addObj(self,object:"Object",include_triangles_ids=None,exclude_triangles_ids=None,opacity:float=0.5,color=None,label=None,show_edges:bool=True):
         """
         Add object to PyVista plotter.
         """
@@ -87,7 +87,7 @@ class PyVistaVisualizer(IVisualizer):
                     continue
                 triangles_ids.remove(tri_id)
         triangles=object.tri_id2vert_id[np.array(triangles_ids)]
-        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity,label=label)
+        self.plotter=visualize_vertices_and_triangles(vertices,triangles,plotter=self.plotter,color=color,opacity=opacity,label=label,show_edges=show_edges)
     def addTri(self,tri:"Tri",opacity:float=0.5,color="red",label=None):
         """
         Add triangle to PyVista plotter.
